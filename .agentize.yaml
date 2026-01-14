@@ -1,0 +1,5 @@
+project:
+  name: llvm-project
+  lang: python
+agentize:
+  commit: 18ffcc668c1bb3aa3f512c8041effe4d227d7748

@@ -119,6 +119,11 @@ static cl::opt<bool>
                            cl::desc("Enable Machine Pipeliner for RISC-V"),
                            cl::init(false), cl::Hidden);
 
+static cl::opt<bool> EnableInsertNOP(
+    "riscv-enable-insert-nop",
+    cl::desc("Insert NOP instruction after every 8 consecutive instructions"),
+    cl::init(false), cl::Hidden);
+
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> X(getTheRISCV32Target());
   RegisterTargetMachine<RISCVTargetMachine> Y(getTheRISCV64Target());
@@ -152,6 +157,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   initializeRISCVLoadStoreOptPass(*PR);
   initializeRISCVExpandAtomicPseudoPass(*PR);
   initializeRISCVRedundantCopyEliminationPass(*PR);
+  initializeRISCVInsertNOPPass(*PR);
   initializeRISCVAsmPrinterPass(*PR);
 }
 
@@ -597,6 +603,10 @@ void RISCVPassConfig::addPreEmitPass2() {
   addPass(createUnpackMachineBundles([&](const MachineFunction &MF) {
     return MF.getFunction().getParent()->getModuleFlag("kcfi");
   }));
+
+  // Insert NOP instructions after every 8 consecutive instructions.
+  if (EnableInsertNOP)
+    addPass(createRISCVInsertNOPPass());
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {
