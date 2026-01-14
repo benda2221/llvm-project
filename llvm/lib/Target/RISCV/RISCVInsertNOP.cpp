@@ -15,9 +15,11 @@
 #include "RISCVInstrInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/Support/Debug.h"
 
 using namespace llvm;
 
+#define DEBUG_TYPE "riscv-insert-nop"
 #define RISCV_INSERT_NOP_NAME "RISC-V Insert NOP pass"
 
 namespace {
@@ -62,20 +64,30 @@ bool RISCVInsertNOP::shouldSkipInstruction(const MachineInstr &MI) const {
 }
 
 bool RISCVInsertNOP::runOnMachineFunction(MachineFunction &MF) {
+  LLVM_DEBUG(dbgs() << "RISCVInsertNOP: Processing function " << MF.getName()
+                    << "\n");
+  
   TII = static_cast<const RISCVInstrInfo *>(MF.getSubtarget().getInstrInfo());
   bool Modified = false;
   unsigned InstrCount = 0;
 
   // Iterate through all basic blocks in the function
   for (auto &MBB : MF) {
+    LLVM_DEBUG(dbgs() << "RISCVInsertNOP: Processing MBB " << MBB.getName()
+                      << "\n");
+    
     // Iterate through all instructions in the basic block
     for (auto MBBI = MBB.begin(), E = MBB.end(); MBBI != E; ++MBBI) {
       // Skip already inserted NOPs to avoid double counting
-      if (shouldSkipInstruction(*MBBI))
+      if (shouldSkipInstruction(*MBBI)) {
+        LLVM_DEBUG(dbgs() << "RISCVInsertNOP: Skipping NOP instruction\n");
         continue;
+      }
 
       // Count this instruction
       InstrCount++;
+      LLVM_DEBUG(dbgs() << "RISCVInsertNOP: Instruction count = " << InstrCount
+                        << ", processing: " << *MBBI << "\n");
 
       // Insert NOP after every 8 instructions
       if (InstrCount % 8 == 0) {
@@ -83,6 +95,9 @@ bool RISCVInsertNOP::runOnMachineFunction(MachineFunction &MF) {
         auto NextMBBI = std::next(MBBI);
         // Don't insert NOP after terminator instructions
         if (NextMBBI == E || !NextMBBI->isTerminator()) {
+          LLVM_DEBUG(dbgs() << "RISCVInsertNOP: Inserting NOP after instruction "
+                            << InstrCount << "\n");
+          
           // Get debug location from current instruction or basic block
           DebugLoc DL = MBBI->getDebugLoc();
           if (!DL)
@@ -95,17 +110,23 @@ bool RISCVInsertNOP::runOnMachineFunction(MachineFunction &MF) {
               .addImm(0);
 
           Modified = true;
+        } else {
+          LLVM_DEBUG(dbgs() << "RISCVInsertNOP: Skipping NOP insertion (next "
+                               "instruction is terminator)\n");
         }
       }
     }
   }
+
+  LLVM_DEBUG(dbgs() << "RISCVInsertNOP: Function " << MF.getName()
+                    << " processed, Modified = " << Modified << "\n");
 
   return Modified;
 }
 
 } // end of anonymous namespace
 
-INITIALIZE_PASS(RISCVInsertNOP, "riscv-insert-nop", RISCV_INSERT_NOP_NAME,
+INITIALIZE_PASS(RISCVInsertNOP, DEBUG_TYPE, RISCV_INSERT_NOP_NAME,
                 false, false)
 
 namespace llvm {
