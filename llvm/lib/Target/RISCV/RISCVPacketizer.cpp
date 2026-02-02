@@ -126,7 +126,7 @@ bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
 }
 
 // Initialize packetizer flags.
-void RISCVPacketizerList::initPacketizerState() override{
+void RISCVPacketizerList::initPacketizerState() {
     Dependence = false;
 }
 
@@ -170,6 +170,6 @@ void RISCVPacketizerList::endPacket(MachineBasicBlock *MBB,MachineBasicBlock:: i
 //                         Public Constructor Functions
 //===----------------------------------------------------------------------===//
 
-FunctionPass *llvm::createRISCVPacketizerPass(MachineFunction &MF) {
-    return new RISCVPacketizer(MF);
+FunctionPass *llvm::createRISCVPacketizerPass() {
+  return new RISCVPacketizer();
 }

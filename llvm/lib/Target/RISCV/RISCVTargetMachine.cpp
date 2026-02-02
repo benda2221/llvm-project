@@ -142,6 +142,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   initializeRISCVVectorPeepholePass(*PR);
   initializeRISCVVLOptimizerPass(*PR);
   initializeRISCVVMV0EliminationPass(*PR);
+  initializeRISCVPacketizerPass(*PR);
   initializeRISCVInsertVSETVLIPass(*PR);
   initializeRISCVInsertReadWriteCSRPass(*PR);
   initializeRISCVInsertWriteVXRMPass(*PR);
@@ -561,6 +562,8 @@ void RISCVPassConfig::addPreSched2() {
 }
 
 void RISCVPassConfig::addPreEmitPass() {
+  // Run packetizer after post-RA scheduling (VLIW bundling).
+  addPass(createRISCVPacketizerPass());
   // TODO: It would potentially be better to schedule copy propagation after
   // expanding pseudos (in addPreEmitPass2). However, performing copy
   // propagation after the machine outliner (which runs after addPreEmitPass)

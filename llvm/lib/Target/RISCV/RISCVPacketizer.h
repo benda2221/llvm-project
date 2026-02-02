@@ -73,7 +73,7 @@ public:
     void endPacket(MachineBasicBlock *MBB,
                  MachineBasicBlock::iterator MI) override;
 
-}
+}; // end class RISCVPacketizerList
 
 } // end namespace llvm
 

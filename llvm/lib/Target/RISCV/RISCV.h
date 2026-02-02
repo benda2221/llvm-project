@@ -117,6 +117,9 @@ void initializeRISCVVLOptimizerPass(PassRegistry &);
 FunctionPass *createRISCVVMV0EliminationPass();
 void initializeRISCVVMV0EliminationPass(PassRegistry &);
 
+FunctionPass *createRISCVPacketizerPass();
+void initializeRISCVPacketizerPass(PassRegistry &);
+
 void initializeRISCVAsmPrinterPass(PassRegistry &);
 } // namespace llvm
 
