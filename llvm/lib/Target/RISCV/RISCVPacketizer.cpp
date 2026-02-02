@@ -23,6 +23,8 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/InitializePasses.h"
+#include "llvm/Support/Debug.h"
 
 using namespace llvm;
 
@@ -49,8 +51,8 @@ namespace {
     bool runOnMachineFunction(MachineFunction &Fn) override;
 
     private:
-        const RISCVInstrInfo *TII;
-        const RISCVRegisterInfo &TRI;
+        const RISCVInstrInfo *RII = nullptr;
+        const RISCVRegisterInfo *RRI = nullptr;
     };
 
 } // end anonymous namespace
@@ -64,16 +66,18 @@ INITIALIZE_PASS_END(RISCVPacketizer, "riscv-packetizer", "RISCV Packetizer", fal
 
 RISCVPacketizerList::RISCVPacketizerList(MachineFunction &MF, 
     MachineLoopInfo &MLI, AAResults *AA) 
-    : VLIWPacketizerList(MF, MLI, nullptr), 
-    RII(MF.getSubtarget<RISCVSubtarget>().getInstrInfo()),
-    RRI(*MF.getSubtarget<RISCVSubtarget>().getRegisterInfo()) {
+    : VLIWPacketizerList(MF, MLI, nullptr){
+    RII = MF.getSubtarget<RISCVSubtarget>().getInstrInfo();
+    RRI = MF.getSubtarget<RISCVSubtarget>().getRegisterInfo();     
 }
 
 bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
+    LLVM_DEBUG(dbgs() << "RISCV Packetizer: runOnMachineFunction " << MF.getName() << "\n");
+
     const RISCVSubtarget &ST = MF.getSubtarget<RISCVSubtarget>();
     const RISCVInstrInfo *RII = ST.getInstrInfo();
-    const RISCVRegisterInfo &RRI = *ST.getRegisterInfo();
-    
+    const RISCVRegisterInfo *RRI = ST.getRegisterInfo();
+
     MachineLoopInfo &MLI = getAnalysis<MachineLoopInfoWrapperPass>().getLI();
 
     // Instantiate the packetizer.
@@ -116,8 +120,7 @@ bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
             // If RB == End, then RE == End.    
             if (RB != End)
                 Packetizer.PacketizeMIs(&MB, RB, RE);
-            
-                Begin = RE;
+            Begin = RE;
         }
     }
 
@@ -131,40 +134,49 @@ void RISCVPacketizerList::initPacketizerState() {
 }
 
 bool RISCVPacketizerList::ignorePseudoInstruction(const MachineInstr &MI,
-    const MachineBasicBlock *MBB) override {
+    const MachineBasicBlock *MBB) {
     if (MI.isDebugInstr())
         return true;
 
     return false;
 }
 
-bool RISCVPacketizerList::isSoloInstruction(const MachineInstr &MI) override {
+bool RISCVPacketizerList::isSoloInstruction(const MachineInstr &MI) {
     // TODO：instructions that can not be packetized with any other instruction.
     return false;
 }
 
-bool RISCVPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) override {
-    return false;
+bool RISCVPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) {
+    // only process RAW dependencies for now
+    for (unsigned i = 0; i < SUJ->Succs.size(); ++i) {
+        if (SUJ->Succs[i].getSUnit() != SUI)
+            continue;
+        SDep::Kind DepType = SUJ->Succs[i].getKind();
+        if (DepType == SDep::Data) {
+            return false;
+        }
+    }
+    return true;
 }
 
-bool RISCVPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) override {
+bool RISCVPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) {
     // TODO: check if the dependence is legal to prune.
     // we define "shallow dependence" 
     // A maximum of only two instructions in an instruction packet may have a RAW dependency between them
     return false;
 }
 
-bool RISCVPacketizerList::shouldAddToPacket(const MachineInstr &MI) override {
-    return false;
+bool RISCVPacketizerList::shouldAddToPacket(const MachineInstr &MI) {
+    return true;
 }
 
-MachineBasicBlock::iterator RISCVPacketizerList::addToPacket(MachineInstr &MI) override {
-    return MI.getIterator();
-}
+// MachineBasicBlock::iterator RISCVPacketizerList::addToPacket(MachineInstr &MI) override {
 
-void RISCVPacketizerList::endPacket(MachineBasicBlock *MBB,MachineBasicBlock:: iterator MI) override {
-    return;
-}
+// }
+
+// void RISCVPacketizerList::endPacket(MachineBasicBlock *MBB,MachineBasicBlock:: iterator MI) override {
+//     return;
+// }
 
 //===----------------------------------------------------------------------===//
 //                         Public Constructor Functions

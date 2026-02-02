@@ -21,7 +21,7 @@
 namespace llvm {
 
 class RISCVInstrInfo;
-class RISCVRegisterInfo;
+struct RISCVRegisterInfo;  
 class MachineFunction;
 class MachineInstr;
 class MachineLoopInfo;
@@ -35,7 +35,7 @@ class RISCVPacketizerList : public VLIWPacketizerList {
 
 private:
     const RISCVInstrInfo *RII;
-    const RISCVRegisterInfo &RRI;
+    const RISCVRegisterInfo *RRI;
 
 public:
     RISCVPacketizerList(MachineFunction &MF, MachineLoopInfo &MLI, AAResults *AA);
@@ -68,10 +68,10 @@ public:
     bool shouldAddToPacket(const MachineInstr &MI) override;
 
     // addToPacket - Add MI to the current packet.
-    MachineBasicBlock::iterator addToPacket(MachineInstr &MI) override;
+    // MachineBasicBlock::iterator addToPacket(MachineInstr &MI) override;
     
-    void endPacket(MachineBasicBlock *MBB,
-                 MachineBasicBlock::iterator MI) override;
+    // void endPacket(MachineBasicBlock *MBB,
+    //              MachineBasicBlock::iterator MI) override;
 
 }; // end class RISCVPacketizerList
 
