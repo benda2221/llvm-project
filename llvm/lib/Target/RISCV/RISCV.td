@@ -32,6 +32,7 @@ include "RISCVSystemOperands.td"
 
 include "RISCVRegisterInfo.td"
 include "RISCVSchedule.td"
+include "RISCVScheduleVLIW.td"
 include "RISCVCallingConv.td"
 include "RISCVInstrInfo.td"
 include "GISel/RISCVRegisterBanks.td"

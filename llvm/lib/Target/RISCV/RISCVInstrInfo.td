@@ -620,6 +620,7 @@ class BranchCC_rri<bits<3> funct3, string opcodestr>
               (ins GPR:$rs1, GPR:$rs2, bare_simm13_lsb0:$imm12),
               opcodestr, "$rs1, $rs2, $imm12">,
       Sched<[WriteJmp, ReadJmp, ReadJmp]> {
+  let Itinerary = IIC_Branch;
   let isBranch = 1;
   let isTerminator = 1;
   let hasSideEffects = 0;
@@ -630,7 +631,9 @@ class BranchCC_rri<bits<3> funct3, string opcodestr>
 let hasSideEffects = 0, mayLoad = 1, mayStore = 0 in {
 class Load_ri<bits<3> funct3, string opcodestr, DAGOperand rty = GPR>
     : RVInstI<funct3, OPC_LOAD, (outs rty:$rd), (ins GPRMem:$rs1, simm12:$imm12),
-              opcodestr, "$rd, ${imm12}(${rs1})">;
+              opcodestr, "$rd, ${imm12}(${rs1})"> {
+  let Itinerary = IIC_Load;
+}
 
 class HLoad_r<bits<7> funct7, bits<5> funct5, string opcodestr>
     : RVInstR<funct7, 0b100, OPC_SYSTEM, (outs GPR:$rd),
@@ -646,7 +649,9 @@ let hasSideEffects = 0, mayLoad = 0, mayStore = 1 in {
 class Store_rri<bits<3> funct3, string opcodestr, DAGOperand rty = GPR>
     : RVInstS<funct3, OPC_STORE, (outs),
               (ins rty:$rs2, GPRMem:$rs1, simm12:$imm12),
-              opcodestr, "$rs2, ${imm12}(${rs1})">;
+              opcodestr, "$rs2, ${imm12}(${rs1})"> {
+  let Itinerary = IIC_Store;
+}
 
 class HStore_rr<bits<7> funct7, string opcodestr>
     : RVInstR<funct7, 0b100, OPC_SYSTEM, (outs),
@@ -660,13 +665,17 @@ let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
 class ALU_ri<bits<3> funct3, string opcodestr>
     : RVInstI<funct3, OPC_OP_IMM, (outs GPR:$rd), (ins GPR:$rs1, simm12:$imm12),
               opcodestr, "$rd, $rs1, $imm12">,
-      Sched<[WriteIALU, ReadIALU]>;
+      Sched<[WriteIALU, ReadIALU]> {
+  let Itinerary = IIC_ALU;
+}
 
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
 class Shift_ri<bits<5> imm11_7, bits<3> funct3, string opcodestr>
     : RVInstIShift<imm11_7, funct3, OPC_OP_IMM, (outs GPR:$rd),
                    (ins GPR:$rs1, uimmlog2xlen:$shamt), opcodestr,
-                   "$rd, $rs1, $shamt">;
+                   "$rd, $rs1, $shamt"> {
+  let Itinerary = IIC_Shift;
+}
 
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
 class ALU_rr<bits<7> funct7, bits<3> funct3, string opcodestr,
@@ -674,26 +683,33 @@ class ALU_rr<bits<7> funct7, bits<3> funct3, string opcodestr,
     : RVInstR<funct7, funct3, OPC_OP, (outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
               opcodestr, "$rd, $rs1, $rs2"> {
   let isCommutable = Commutable;
+  let Itinerary = IIC_ALU;
 }
 
 let hasNoSchedulingInfo = 1,
     hasSideEffects = 1, mayLoad = 0, mayStore = 0 in
 class CSR_ir<bits<3> funct3, string opcodestr>
     : RVInstI<funct3, OPC_SYSTEM, (outs GPR:$rd), (ins csr_sysreg:$imm12, GPR:$rs1),
-              opcodestr, "$rd, $imm12, $rs1">, Sched<[WriteCSR, ReadCSR]>;
+              opcodestr, "$rd, $imm12, $rs1">, Sched<[WriteCSR, ReadCSR]> {
+  let Itinerary = IIC_CSR;
+}
 
 let hasNoSchedulingInfo = 1,
     hasSideEffects = 1, mayLoad = 0, mayStore = 0 in
 class CSR_ii<bits<3> funct3, string opcodestr>
     : RVInstI<funct3, OPC_SYSTEM, (outs GPR:$rd),
               (ins csr_sysreg:$imm12, uimm5:$rs1),
-              opcodestr, "$rd, $imm12, $rs1">, Sched<[WriteCSR]>;
+              opcodestr, "$rd, $imm12, $rs1">, Sched<[WriteCSR]> {
+  let Itinerary = IIC_CSR;
+}
 
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
 class ShiftW_ri<bits<7> imm11_5, bits<3> funct3, string opcodestr>
     : RVInstIShiftW<imm11_5, funct3, OPC_OP_IMM_32, (outs GPR:$rd),
                     (ins GPR:$rs1, uimm5:$shamt), opcodestr,
-                    "$rd, $rs1, $shamt">;
+                    "$rd, $rs1, $shamt"> {
+  let Itinerary = IIC_Shift;
+}
 
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
 class ALUW_rr<bits<7> funct7, bits<3> funct3, string opcodestr,
@@ -701,6 +717,7 @@ class ALUW_rr<bits<7> funct7, bits<3> funct3, string opcodestr,
     : RVInstR<funct7, funct3, OPC_OP_32, (outs GPR:$rd),
               (ins GPR:$rs1, GPR:$rs2), opcodestr, "$rd, $rs1, $rs2"> {
   let isCommutable = Commutable;
+  let Itinerary = IIC_ALU32;
 }
 
 let hasSideEffects = 1, mayLoad = 0, mayStore = 0 in
@@ -731,15 +748,19 @@ class UnaryW_r<bits<12> imm12, bits<3> funct3, string opcodestr>
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
 let isReMaterializable = 1, isAsCheapAsAMove = 1,
     IsSignExtendingOpW = 1 in
+let Itinerary = IIC_ALU in
 def LUI : RVInstU<OPC_LUI, (outs GPR:$rd), (ins uimm20_lui:$imm20),
                   "lui", "$rd, $imm20">, Sched<[WriteIALU]>;
 
+let Itinerary = IIC_ALU in
 def AUIPC : RVInstU<OPC_AUIPC, (outs GPR:$rd), (ins uimm20_auipc:$imm20),
                     "auipc", "$rd, $imm20">, Sched<[WriteIALU]>;
 
+let Itinerary = IIC_Jump in
 def JAL : RVInstJ<OPC_JAL, (outs GPR:$rd), (ins simm21_lsb0_jal:$imm20),
                   "jal", "$rd, $imm20">, Sched<[WriteJal]>;
 
+let Itinerary = IIC_Jump in
 def JALR : RVInstI<0b000, OPC_JALR, (outs GPR:$rd),
                    (ins GPR:$rs1, simm12:$imm12),
                    "jalr", "$rd, ${imm12}(${rs1})">,

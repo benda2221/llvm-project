@@ -44,6 +44,8 @@ using namespace llvm;
 #define GET_INSTRINFO_NAMED_OPS
 #include "RISCVGenInstrInfo.inc"
 
+#include "RISCVGenDFAPacketizer.inc"
+
 #define DEBUG_TYPE "riscv-instr-info"
 STATISTIC(NumVRegSpilled,
           "Number of registers within vector register groups spilled");
@@ -4946,4 +4948,11 @@ bool RISCVInstrInfo::isHighLatencyDef(int Opc) const {
   case RISCV::VFRSQRT7_V:
     return true;
   }
+}
+
+DFAPacketizer *
+RISCVInstrInfo::CreateTargetScheduleState(
+    const TargetSubtargetInfo &STI) const {
+  const InstrItineraryData *II = STI.getInstrItineraryData();
+  return static_cast<const RISCVSubtarget &>(STI).createDFAPacketizer(II);
 }

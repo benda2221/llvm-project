@@ -224,6 +224,11 @@ void DFAPacketizerEmitter::run(raw_ostream &OS) {
     }
   }
 
+  if (ItinsByNamespace.empty()) {
+    LLVM_DEBUG(dbgs() << "dfa-emitter: (no processor model with "
+                         "ProcessorItineraries); DFA packetizer tables not generated.\n");
+  }
+
   for (auto &KV : ItinsByNamespace)
     emitForItineraries(OS, KV.second, KV.first);
   OS << "} // end namespace llvm\n";
@@ -257,12 +262,30 @@ void DFAPacketizerEmitter::emitForItineraries(
   OS << "\n};\n\n";
 
   // And the mapping from Itinerary index into the previous table.
+  // This array is indexed by ProcID (not by position in ProcModels), so we
+  // must emit entries for every ProcID from 0 up to max(ProcID)+1, filling
+  // in 0 for any non-itinerary models to avoid out-of-bounds access.
+  unsigned MaxProcID = 0;
+  for (const CodeGenProcModel *Model : ProcModels)
+    MaxProcID = std::max(MaxProcID, Model->Index);
+
   OS << "constexpr unsigned " << TargetName << DFAName
      << "ProcResourceIndexStart[] = {\n";
   OS << "  0, // NoSchedModel\n";
-  for (const CodeGenProcModel *Model : ProcModels) {
-    OS << "  " << ProcModelStartIdx[Model] << ", // " << Model->ModelName
-       << "\n";
+  for (unsigned I = 1; I <= MaxProcID; ++I) {
+    // Find the model with this ProcID, if any.
+    const CodeGenProcModel *Found = nullptr;
+    for (const CodeGenProcModel *Model : ProcModels) {
+      if (Model->Index == I) {
+        Found = Model;
+        break;
+      }
+    }
+    if (Found)
+      OS << "  " << ProcModelStartIdx[Found] << ", // " << Found->ModelName
+         << "\n";
+    else
+      OS << "  0, // (no itinerary model at ProcID " << I << ")\n";
   }
   OS << "  " << ScheduleClasses.size() << "\n};\n\n";
 

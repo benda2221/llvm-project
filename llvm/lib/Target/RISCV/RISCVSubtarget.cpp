@@ -92,6 +92,9 @@ RISCVSubtarget::initializeSubtargetDependencies(const Triple &TT, StringRef CPU,
   ParseSubtargetFeatures(CPU, TuneCPU, FS);
   TargetABI = RISCVABI::computeTargetABI(TT, getFeatureBits(), ABIName);
   RISCVFeatures::validate(TT, getFeatureBits());
+  // Initialize itinerary data for the current CPU (used by DFA packetizer
+  // when -mcpu=riscv-vliw).
+  InstrItins = getInstrItineraryForCPU(CPU);
   return *this;
 }
 

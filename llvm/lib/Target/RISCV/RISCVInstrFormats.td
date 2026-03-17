@@ -193,6 +193,10 @@ class RVInstCommon<dag outs, dag ins, string opcodestr, string argstr,
   let AsmString = opcodestr # !if(!empty(argstr), "", "\t" # argstr);
   let Pattern = pattern;
 
+  // Itinerary class for DFA-based VLIW packetizer.
+  // Defaults to NoItinerary; override in instruction defs or multiclasses.
+  let Itinerary = NoItinerary;
+
   let TSFlags{4-0} = format.Value;
 
   // Defaults

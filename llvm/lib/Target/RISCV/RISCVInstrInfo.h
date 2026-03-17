@@ -302,6 +302,9 @@ public:
 
   bool isHighLatencyDef(int Opc) const override;
 
+  DFAPacketizer *
+  CreateTargetScheduleState(const TargetSubtargetInfo &STI) const override;
+
   /// Return true if pairing the given load or store may be paired with another.
   static bool isPairableLdStInstOpc(unsigned Opc);
 

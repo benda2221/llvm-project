@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Target/TargetMachine.h"
@@ -110,6 +111,10 @@ private:
   std::bitset<RISCV::NUM_TARGET_REGS> UserReservedRegister;
   const RISCVTuneInfoTable::RISCVTuneInfo *TuneInfo;
 
+  /// Instruction itinerary data for the current CPU (used by DFA packetizer
+  /// when -mcpu=riscv-vliw).
+  InstrItineraryData InstrItins;
+
   RISCVFrameLowering FrameLowering;
   RISCVInstrInfo InstrInfo;
   RISCVRegisterInfo RegInfo;
@@ -141,6 +146,9 @@ public:
   const RISCVInstrInfo *getInstrInfo() const override { return &InstrInfo; }
   const RISCVRegisterInfo *getRegisterInfo() const override {
     return &RegInfo;
+  }
+  const InstrItineraryData *getInstrItineraryData() const override {
+    return &InstrItins;
   }
   const RISCVTargetLowering *getTargetLowering() const override {
     return &TLInfo;

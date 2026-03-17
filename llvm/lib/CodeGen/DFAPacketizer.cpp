@@ -87,6 +87,14 @@ unsigned DFAPacketizer::getUsedResources(unsigned InstIdx) {
   assert(!NfaPaths.empty() && "Invalid bundle!");
   const NfaPath &RS = NfaPaths.front();
 
+  // tmp_code
+  // When instructions have SchedClass 0 or ItinActions[SchedClass]==0 we skip
+  // A.add(), so the path may have fewer entries than instructions in the packet.
+  if (InstIdx >= RS.size())
+    return 0;
+
+  // tmp_code end  
+  
   // RS stores the cumulative resources used up to and including the I'th
   // instruction. The 0th instruction is the base case.
   if (InstIdx == 0)
