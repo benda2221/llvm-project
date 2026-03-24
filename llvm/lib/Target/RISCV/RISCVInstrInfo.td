@@ -814,6 +814,7 @@ def ADD  : ALU_rr<0b0000000, 0b000, "add", Commutable=1>,
            Sched<[WriteIALU, ReadIALU, ReadIALU]>;
 def SUB  : ALU_rr<0b0100000, 0b000, "sub">,
            Sched<[WriteIALU, ReadIALU, ReadIALU]>;
+let Itinerary = IIC_Shift in
 def SLL  : ALU_rr<0b0000000, 0b001, "sll">,
            Sched<[WriteShiftReg, ReadShiftReg, ReadShiftReg]>;
 let IsSignExtendingOpW = 1 in {
@@ -824,8 +825,10 @@ def SLTU : ALU_rr<0b0000000, 0b011, "sltu">,
 }
 def XOR  : ALU_rr<0b0000000, 0b100, "xor", Commutable=1>,
            Sched<[WriteIALU, ReadIALU, ReadIALU]>;
+let Itinerary = IIC_Shift in
 def SRL  : ALU_rr<0b0000000, 0b101, "srl">,
            Sched<[WriteShiftReg, ReadShiftReg, ReadShiftReg]>;
+let Itinerary = IIC_Shift in
 def SRA  : ALU_rr<0b0100000, 0b101, "sra">,
            Sched<[WriteShiftReg, ReadShiftReg, ReadShiftReg]>;
 def OR   : ALU_rr<0b0000000, 0b110, "or", Commutable=1>,
@@ -834,6 +837,7 @@ def AND  : ALU_rr<0b0000000, 0b111, "and", Commutable=1>,
            Sched<[WriteIALU, ReadIALU, ReadIALU]>;
 
 let hasSideEffects = 1, mayLoad = 0, mayStore = 0 in {
+let Itinerary = IIC_Nop in
 def FENCE : RVInstI<0b000, OPC_MISC_MEM, (outs),
                     (ins fencearg:$pred, fencearg:$succ),
                     "fence", "$pred, $succ">, Sched<[]> {
@@ -845,18 +849,21 @@ def FENCE : RVInstI<0b000, OPC_MISC_MEM, (outs),
   let imm12 = {0b0000,pred,succ};
 }
 
+let Itinerary = IIC_Nop in
 def FENCE_TSO : RVInstI<0b000, OPC_MISC_MEM, (outs), (ins), "fence.tso", "">, Sched<[]> {
   let rs1 = 0;
   let rd = 0;
   let imm12 = {0b1000,0b0011,0b0011};
 }
 
+let Itinerary = IIC_Nop in
 def FENCE_I : RVInstI<0b001, OPC_MISC_MEM, (outs), (ins), "fence.i", "">, Sched<[]> {
   let rs1 = 0;
   let rd = 0;
   let imm12 = 0;
 }
 
+let Itinerary = IIC_Nop in
 def ECALL : RVInstI<0b000, OPC_SYSTEM, (outs), (ins), "ecall", "">, Sched<[WriteJmp]> {
   let rs1 = 0;
   let rd = 0;
@@ -864,6 +871,7 @@ def ECALL : RVInstI<0b000, OPC_SYSTEM, (outs), (ins), "ecall", "">, Sched<[Write
 }
 
 let isTrap = 1 in
+let Itinerary = IIC_Nop in
 def EBREAK : RVInstI<0b000, OPC_SYSTEM, (outs), (ins), "ebreak", "">,
              Sched<[]> {
   let rs1 = 0;
@@ -904,7 +912,9 @@ let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
 def ADDIW : RVInstI<0b000, OPC_OP_IMM_32, (outs GPR:$rd),
                     (ins GPR:$rs1, simm12:$imm12),
                     "addiw", "$rd, $rs1, $imm12">,
-            Sched<[WriteIALU32, ReadIALU32]>;
+            Sched<[WriteIALU32, ReadIALU32]> {
+  let Itinerary = IIC_ALU32;
+}
 
 def SLLIW : ShiftW_ri<0b0000000, 0b001, "slliw">,
             Sched<[WriteShiftImm32, ReadShiftImm32]>;
@@ -917,10 +927,13 @@ def ADDW  : ALUW_rr<0b0000000, 0b000, "addw", Commutable=1>,
             Sched<[WriteIALU32, ReadIALU32, ReadIALU32]>;
 def SUBW  : ALUW_rr<0b0100000, 0b000, "subw">,
             Sched<[WriteIALU32, ReadIALU32, ReadIALU32]>;
+let Itinerary = IIC_Shift in
 def SLLW  : ALUW_rr<0b0000000, 0b001, "sllw">,
             Sched<[WriteShiftReg32, ReadShiftReg32, ReadShiftReg32]>;
+let Itinerary = IIC_Shift in
 def SRLW  : ALUW_rr<0b0000000, 0b101, "srlw">,
             Sched<[WriteShiftReg32, ReadShiftReg32, ReadShiftReg32]>;
+let Itinerary = IIC_Shift in
 def SRAW  : ALUW_rr<0b0100000, 0b101, "sraw">,
             Sched<[WriteShiftReg32, ReadShiftReg32, ReadShiftReg32]>;
 } // IsSignExtendingOpW = 1

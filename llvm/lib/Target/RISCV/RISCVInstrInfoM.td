@@ -30,6 +30,7 @@ def riscv_remuw : RVSDNode<"REMUW", SDT_RISCVIntBinOpW>;
 //===----------------------------------------------------------------------===//
 
 let Predicates = [HasStdExtZmmul] in {
+let Itinerary = IIC_MUL in {
 def MUL     : ALU_rr<0b0000001, 0b000, "mul", Commutable=1>,
               Sched<[WriteIMul, ReadIMul, ReadIMul]>;
 def MULH    : ALU_rr<0b0000001, 0b001, "mulh", Commutable=1>,
@@ -38,9 +39,11 @@ def MULHSU  : ALU_rr<0b0000001, 0b010, "mulhsu">,
               Sched<[WriteIMul, ReadIMul, ReadIMul]>;
 def MULHU   : ALU_rr<0b0000001, 0b011, "mulhu", Commutable=1>,
               Sched<[WriteIMul, ReadIMul, ReadIMul]>;
+} // Itinerary = IIC_MUL
 } // Predicates = [HasStdExtZmmul]
 
 let Predicates = [HasStdExtM] in {
+let Itinerary = IIC_DIV in {
 def DIV     : ALU_rr<0b0000001, 0b100, "div">,
               Sched<[WriteIDiv, ReadIDiv, ReadIDiv]>;
 def DIVU    : ALU_rr<0b0000001, 0b101, "divu">,
@@ -49,14 +52,17 @@ def REM     : ALU_rr<0b0000001, 0b110, "rem">,
               Sched<[WriteIRem, ReadIRem, ReadIRem]>;
 def REMU    : ALU_rr<0b0000001, 0b111, "remu">,
               Sched<[WriteIRem, ReadIRem, ReadIRem]>;
+} // Itinerary = IIC_DIV
 } // Predicates = [HasStdExtM]
 
 let Predicates = [HasStdExtZmmul, IsRV64], IsSignExtendingOpW = 1 in {
+let Itinerary = IIC_MUL in
 def MULW    : ALUW_rr<0b0000001, 0b000, "mulw", Commutable=1>,
               Sched<[WriteIMul32, ReadIMul32, ReadIMul32]>;
 } // Predicates = [HasStdExtZmmul, IsRV64]
 
 let Predicates = [HasStdExtM, IsRV64], IsSignExtendingOpW = 1 in {
+let Itinerary = IIC_DIV in {
 def DIVW    : ALUW_rr<0b0000001, 0b100, "divw">,
               Sched<[WriteIDiv32, ReadIDiv32, ReadIDiv32]>;
 def DIVUW   : ALUW_rr<0b0000001, 0b101, "divuw">,
@@ -65,6 +71,7 @@ def REMW    : ALUW_rr<0b0000001, 0b110, "remw">,
               Sched<[WriteIRem32, ReadIRem32, ReadIRem32]>;
 def REMUW   : ALUW_rr<0b0000001, 0b111, "remuw">,
               Sched<[WriteIRem32, ReadIRem32, ReadIRem32]>;
+} // Itinerary = IIC_DIV
 } // Predicates = [HasStdExtM, IsRV64]
 
 //===----------------------------------------------------------------------===//

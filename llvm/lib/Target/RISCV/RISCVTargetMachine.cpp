@@ -562,8 +562,6 @@ void RISCVPassConfig::addPreSched2() {
 }
 
 void RISCVPassConfig::addPreEmitPass() {
-  // Run packetizer after post-RA scheduling (VLIW bundling).
-  addPass(createRISCVPacketizerPass());
   // TODO: It would potentially be better to schedule copy propagation after
   // expanding pseudos (in addPreEmitPass2). However, performing copy
   // propagation after the machine outliner (which runs after addPreEmitPass)
@@ -600,6 +598,10 @@ void RISCVPassConfig::addPreEmitPass2() {
   addPass(createUnpackMachineBundles([&](const MachineFunction &MF) {
     return MF.getFunction().getParent()->getModuleFlag("kcfi");
   }));
+
+  // VLIW packetizer runs on the final MI stream
+  // so that bundles remain valid until emission.
+  addPass(createRISCVPacketizerPass());
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {

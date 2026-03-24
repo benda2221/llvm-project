@@ -15,7 +15,7 @@
 // Instruction class templates
 //===----------------------------------------------------------------------===//
 
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0 in
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0, Itinerary = IIC_Atomic in
 class LR_r<bit aq, bit rl, bits<3> funct3, string opcodestr>
     : RVInstRAtomic<0b00010, aq, rl, funct3, OPC_AMO,
                     (outs GPR:$rd), (ins GPRMemZeroOffset:$rs1),
@@ -30,7 +30,7 @@ multiclass LR_r_aq_rl<bits<3> funct3, string opcodestr> {
   def _AQ_RL : LR_r<1, 1, funct3, opcodestr # ".aqrl">;
 }
 
-let hasSideEffects = 0, mayLoad = 0, mayStore = 1 in
+let hasSideEffects = 0, mayLoad = 0, mayStore = 1, Itinerary = IIC_Atomic in
 class SC_r<bit aq, bit rl, bits<3> funct3, string opcodestr>
     : RVInstRAtomic<0b00011, aq, rl, funct3, OPC_AMO,
                     (outs GPR:$rd), (ins GPRMemZeroOffset:$rs1, GPR:$rs2),
@@ -43,7 +43,7 @@ multiclass SC_r_aq_rl<bits<3> funct3, string opcodestr> {
   def _AQ_RL : SC_r<1, 1, funct3, opcodestr # ".aqrl">;
 }
 
-let hasSideEffects = 0, mayLoad = 1, mayStore = 1 in
+let hasSideEffects = 0, mayLoad = 1, mayStore = 1, Itinerary = IIC_Atomic in
 class AMO_rr<bits<5> funct5, bit aq, bit rl, bits<3> funct3, string opcodestr>
     : RVInstRAtomic<funct5, aq, rl, funct3, OPC_AMO,
                     (outs GPR:$rd), (ins GPRMemZeroOffset:$rs1, GPR:$rs2),

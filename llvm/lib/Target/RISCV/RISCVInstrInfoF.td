@@ -198,7 +198,9 @@ class FPLoad_r<bits<3> funct3, string opcodestr, DAGOperand rty,
     : RVInstI<funct3, OPC_LOAD_FP, (outs rty:$rd),
               (ins GPRMem:$rs1, simm12:$imm12),
               opcodestr, "$rd, ${imm12}(${rs1})">,
-      Sched<[sw, ReadFMemBase]>;
+      Sched<[sw, ReadFMemBase]> {
+  let Itinerary = IIC_Load;
+}
 
 let hasSideEffects = 0, mayLoad = 0, mayStore = 1 in
 class FPStore_r<bits<3> funct3, string opcodestr, DAGOperand rty,
@@ -206,7 +208,9 @@ class FPStore_r<bits<3> funct3, string opcodestr, DAGOperand rty,
     : RVInstS<funct3, OPC_STORE_FP, (outs),
               (ins rty:$rs2, GPRMem:$rs1, simm12:$imm12),
               opcodestr, "$rs2, ${imm12}(${rs1})">,
-      Sched<[sw, ReadFStoreData, ReadFMemBase]>;
+      Sched<[sw, ReadFStoreData, ReadFMemBase]> {
+  let Itinerary = IIC_Store;
+}
 
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0, mayRaiseFPException = 1,
     UseNamedOperandTable = 1, hasPostISelHook = 1, isCommutable = 1 in
@@ -214,7 +218,9 @@ class FPFMA_rrr_frm<RISCVOpcode opcode, bits<2> funct2, string opcodestr,
                     DAGOperand rty>
     : RVInstR4Frm<funct2, opcode, (outs rty:$rd),
                   (ins rty:$rs1, rty:$rs2, rty:$rs3, frmarg:$frm),
-                  opcodestr, "$rd, $rs1, $rs2, $rs3$frm">;
+                  opcodestr, "$rd, $rs1, $rs2, $rs3$frm"> {
+  let Itinerary = IIC_FPU;
+}
 
 multiclass FPFMA_rrr_frm_m<RISCVOpcode opcode, bits<2> funct2,
                            string opcodestr, ExtInfo Ext> {
@@ -256,6 +262,7 @@ class FPUnaryOp_r<bits<7> funct7, bits<5> rs2val, bits<3> funct3,
     : RVInstR<funct7, funct3, OPC_OP_FP, (outs rdty:$rd), (ins rs1ty:$rs1),
               opcodestr, "$rd, $rs1"> {
   let rs2 = rs2val;
+  let Itinerary = IIC_FPU;
 }
 multiclass FPUnaryOp_r_m<bits<7> funct7, bits<5> rs2val, bits<3> funct3,
                          ExtInfo Ext, DAGOperand rdty, DAGOperand rs1ty,
@@ -272,6 +279,7 @@ class FPUnaryOp_r_frm<bits<7> funct7, bits<5> rs2val, DAGOperand rdty,
                  (ins rs1ty:$rs1, frmarg:$frm), opcodestr,
                   "$rd, $rs1$frm"> {
   let rs2 = rs2val;
+  let Itinerary = IIC_FPU;
 }
 multiclass FPUnaryOp_r_frm_m<bits<7> funct7, bits<5> rs2val,
                              ExtInfo Ext, DAGOperand rdty, DAGOperand rs1ty,
@@ -290,6 +298,7 @@ class FPUnaryOp_r_frmlegacy<bits<7> funct7, bits<5> rs2val, DAGOperand rdty,
                  (ins rs1ty:$rs1, frmarglegacy:$frm), opcodestr,
                   "$rd, $rs1$frm"> {
   let rs2 = rs2val;
+  let Itinerary = IIC_FPU;
 }
 multiclass FPUnaryOp_r_frmlegacy_m<bits<7> funct7, bits<5> rs2val,
                                    ExtInfo Ext, DAGOperand rdty, DAGOperand rs1ty,
@@ -307,6 +316,7 @@ class FPCmp_rr<bits<7> funct7, bits<3> funct3, string opcodestr,
     : RVInstR<funct7, funct3, OPC_OP_FP, (outs GPR:$rd),
               (ins rty:$rs1, rty:$rs2), opcodestr, "$rd, $rs1, $rs2"> {
   let isCommutable = Commutable;
+  let Itinerary = IIC_FPU;
 }
 multiclass FPCmp_rr_m<bits<7> funct7, bits<3> funct3, string opcodestr,
                       ExtInfo Ext, bit Commutable = 0> {
@@ -367,8 +377,10 @@ foreach Ext = FExts in {
   defm FMUL_S : FPALU_rr_frm_m<0b0001000, "fmul.s", Ext, Commutable=1>;
 
   let SchedRW = [WriteFDiv32, ReadFDiv32, ReadFDiv32] in
+  let Itinerary = IIC_FDiv in
   defm FDIV_S : FPALU_rr_frm_m<0b0001100, "fdiv.s", Ext>;
 
+  let Itinerary = IIC_FDiv in
   defm FSQRT_S : FPUnaryOp_r_frm_m<0b0101100, 0b00000, Ext, Ext.PrimaryTy,
                                    Ext.PrimaryTy, "fsqrt.s">,
                  Sched<[WriteFSqrt32, ReadFSqrt32]>;
@@ -386,11 +398,13 @@ foreach Ext = FExts in {
   }
 
   let IsSignExtendingOpW = 1 in
+  let Itinerary = IIC_FPToInt in
   defm FCVT_W_S : FPUnaryOp_r_frm_m<0b1100000, 0b00000, Ext, GPR, Ext.PrimaryTy,
                                     "fcvt.w.s">,
                   Sched<[WriteFCvtF32ToI32, ReadFCvtF32ToI32]>;
 
   let IsSignExtendingOpW = 1 in
+  let Itinerary = IIC_FPToInt in
   defm FCVT_WU_S : FPUnaryOp_r_frm_m<0b1100000, 0b00001, Ext, GPR, Ext.PrimaryTy,
                                      "fcvt.wu.s">,
                    Sched<[WriteFCvtF32ToI32, ReadFCvtF32ToI32]>;
@@ -406,10 +420,12 @@ foreach Ext = FExts in {
                                 "fclass.s">,
                   Sched<[WriteFClass32, ReadFClass32]>;
 
+  let Itinerary = IIC_IntToFP in
   defm FCVT_S_W : FPUnaryOp_r_frm_m<0b1101000, 0b00000, Ext, Ext.PrimaryTy, GPR,
                                     "fcvt.s.w">,
                   Sched<[WriteFCvtI32ToF32, ReadFCvtI32ToF32]>;
 
+  let Itinerary = IIC_IntToFP in
   defm FCVT_S_WU : FPUnaryOp_r_frm_m<0b1101000, 0b00001, Ext, Ext.PrimaryTy, GPR,
                                      "fcvt.s.wu">,
                    Sched<[WriteFCvtI32ToF32, ReadFCvtI32ToF32]>;

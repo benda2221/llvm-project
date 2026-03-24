@@ -6,107 +6,95 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines itinerary classes and processor itineraries for a simple
-// RISCV VLIW processor model. The DFA packetizer uses these itineraries to
-// determine which instructions can be co-issued in a single VLIW packet.
+// This file defines shared VLIW scheduling building blocks for the Dandelion
+// processor:
+//   - functional units (one per physical pipeline)
+//   - instruction itinerary classes (IIC_*)
+//
+// Dandelion has 8 in-order pipelines.  Each pipeline is modelled as a separate
+// FuncUnit so that the itinerary framework can enforce the correct dispatch
+// constraints.
+//
+// Pipeline layout (from arch.md):
+//   Slot 0  – FDivFPUPipeline  : FDiv + FPU
+//   Slot 1  – ALUFPUPipeline   : ALU  + FPU  (FPToInt  / FCVT.W.S,FCVT.WU.S)
+//   Slot 2  – ALUFPUPipeline   : ALU  + FPU  (IntToFP  / FCVT.S.W,FCVT.S.WU)
+//   Slot 3  – ALUiMDPipeline   : ALU  + iMul/Div
+//   Slot 4  – ALUiMDPipeline   : ALU  + iMul/Div
+//   Slot 5  – ALULSUPipeline   : ALU  + LSU
+//   Slot 6  – ALULSUPipeline   : ALU  + LSU
+//   Slot 7  – ALUBranchPipeline: ALU  + Branch
+//
+// The concrete processor itineraries and SchedMachineModel are defined in
+// RISCVSchedDandelion.td.
 //
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
-// Functional units (issue slots)
+// Functional units – one per physical pipeline
 //===----------------------------------------------------------------------===//
 
-def RISCV_SLOT0 : FuncUnit;  // ALU / Branch / Load / Store
-def RISCV_SLOT1 : FuncUnit;  // ALU / Multiply
-def RISCV_SLOT2 : FuncUnit;  // ALU / FPU
+// Pipeline 0: FDiv + FPU  (no ALU)
+def RISCV_SLOT0  : FuncUnit;
+
+// Pipeline 1: ALU + FPU  (FPToInt support)
+def RISCV_SLOT1  : FuncUnit;
+
+// Pipeline 2: ALU + FPU  (IntToFP support)
+def RISCV_SLOT2  : FuncUnit;
+
+// Pipeline 3: ALU + iMul/Div
+def RISCV_SLOT3  : FuncUnit;
+
+// Pipeline 4: ALU + iMul/Div
+def RISCV_SLOT4  : FuncUnit;
+
+// Pipeline 5: ALU + LSU
+def RISCV_SLOT5  : FuncUnit;
+
+// Pipeline 6: ALU + LSU
+def RISCV_SLOT6  : FuncUnit;
+
+// Pipeline 7: ALU + Branch
+def RISCV_SLOT7  : FuncUnit;
 
 //===----------------------------------------------------------------------===//
 // Instruction itinerary classes
 //===----------------------------------------------------------------------===//
 
+// Integer ALU (non-shift, non-multiply/divide) – pipelines 1-7
 def IIC_ALU     : InstrItinClass;
+// RV32-specific ALU word instructions (ADDW/SUBW/…) – pipelines 1-7
 def IIC_ALU32   : InstrItinClass;
+// Shift instructions – pipelines 1-7
 def IIC_Shift   : InstrItinClass;
+
+// Integer multiply – pipelines 3-4
+def IIC_MUL     : InstrItinClass;
+// Integer divide/remainder – pipelines 3-4 (iterative SRT2)
+def IIC_DIV     : InstrItinClass;
+
+// Load  – pipelines 5-6
 def IIC_Load    : InstrItinClass;
+// Store – pipelines 5-6
 def IIC_Store   : InstrItinClass;
+
+// Conditional branch + JAL/JALR – pipeline 7
 def IIC_Branch  : InstrItinClass;
 def IIC_Jump    : InstrItinClass;
-def IIC_MUL     : InstrItinClass;
-def IIC_DIV     : InstrItinClass;
+
+// FPU (add/sub/mul/fma/cmp/fmin/fmax/fsgnj/fcvt scalar) – pipelines 0-2
 def IIC_FPU     : InstrItinClass;
+// FP-to-Int type conversion (FCVT.W.S / FCVT.WU.S) – pipeline 1 only
+def IIC_FPToInt : InstrItinClass;
+// Int-to-FP type conversion (FCVT.S.W / FCVT.S.WU) – pipeline 2 only
+def IIC_IntToFP : InstrItinClass;
+// FP divide / sqrt (FDiv unit, pipeline 0 only)
+def IIC_FDiv    : InstrItinClass;
+
+// CSR instructions – treated as single-cycle, pipeline 7 (or SLOT1 fallback)
 def IIC_CSR     : InstrItinClass;
+// Atomic memory operations – pipelines 5-6 (use LSU)
 def IIC_Atomic  : InstrItinClass;
+// NOP / pseudo-instructions – any pipeline
 def IIC_Nop     : InstrItinClass;
-
-//===----------------------------------------------------------------------===//
-// Processor itineraries
-//
-// Each InstrItinData maps an itinerary class to the functional units it can
-// use, the number of cycles per stage, and operand read/write cycles.
-//===----------------------------------------------------------------------===//
-
-def RISCVVLIWItineraries : ProcessorItineraries<
-  [RISCV_SLOT0, RISCV_SLOT1, RISCV_SLOT2],  // FuncUnit list
-  [],                                         // Bypass list (none)
-  [
-    // ALU: any slot, 1 cycle
-    InstrItinData<IIC_ALU,     [InstrStage<1, [RISCV_SLOT0, RISCV_SLOT1, RISCV_SLOT2]>],
-                               [2, 1, 1]>,
-    InstrItinData<IIC_ALU32,   [InstrStage<1, [RISCV_SLOT0, RISCV_SLOT1, RISCV_SLOT2]>],
-                               [2, 1, 1]>,
-    InstrItinData<IIC_Shift,   [InstrStage<1, [RISCV_SLOT0, RISCV_SLOT1, RISCV_SLOT2]>],
-                               [2, 1, 1]>,
-
-    // Load: SLOT0 only, 2 cycle load latency
-    InstrItinData<IIC_Load,    [InstrStage<1, [RISCV_SLOT0]>],
-                               [3, 1]>,
-
-    // Store: SLOT0 only, 1 cycle
-    InstrItinData<IIC_Store,   [InstrStage<1, [RISCV_SLOT0]>],
-                               [1, 1, 1]>,
-
-    // Branch: SLOT0 only, 1 cycle
-    InstrItinData<IIC_Branch,  [InstrStage<1, [RISCV_SLOT0]>],
-                               [1, 1, 1]>,
-
-    // Jump: SLOT0 only, 1 cycle
-    InstrItinData<IIC_Jump,    [InstrStage<1, [RISCV_SLOT0]>],
-                               [2, 1]>,
-
-    // Multiply: SLOT1, 3 cycle latency
-    InstrItinData<IIC_MUL,     [InstrStage<3, [RISCV_SLOT1]>],
-                               [4, 1, 1]>,
-
-    // Divide: SLOT1, long latency (20 cycles)
-    InstrItinData<IIC_DIV,     [InstrStage<20, [RISCV_SLOT1]>],
-                               [21, 1, 1]>,
-
-    // FPU: SLOT2, 4 cycle latency
-    InstrItinData<IIC_FPU,     [InstrStage<4, [RISCV_SLOT2]>],
-                               [5, 1, 1]>,
-
-    // CSR: SLOT0 only, 1 cycle
-    InstrItinData<IIC_CSR,     [InstrStage<1, [RISCV_SLOT0]>],
-                               [2, 1]>,
-
-    // Atomic: SLOT0 only, 3 cycle latency
-    InstrItinData<IIC_Atomic,  [InstrStage<3, [RISCV_SLOT0]>],
-                               [4, 1, 1]>,
-
-    // Nop: any slot
-    InstrItinData<IIC_Nop,     [InstrStage<1, [RISCV_SLOT0, RISCV_SLOT1, RISCV_SLOT2]>]>
-  ]
->;
-
-//===----------------------------------------------------------------------===//
-// VLIW scheduling machine model
-//===----------------------------------------------------------------------===//
-
-def RISCVVLIWModel : SchedMachineModel {
-  let IssueWidth = 3;
-  let Itineraries = RISCVVLIWItineraries;
-  let LoadLatency = 3;
-  let MispredictPenalty = 5;
-  let PostRAScheduler = 1;
-  let CompleteModel = 0;
-}
