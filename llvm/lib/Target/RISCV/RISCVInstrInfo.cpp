@@ -4954,5 +4954,11 @@ DFAPacketizer *
 RISCVInstrInfo::CreateTargetScheduleState(
     const TargetSubtargetInfo &STI) const {
   const InstrItineraryData *II = STI.getInstrItineraryData();
-  return static_cast<const RISCVSubtarget &>(STI).createDFAPacketizer(II);
+  // Dandelion is the only itinerary-based model; its PacketizerNamespace is
+  // "Dandelion", so tblgen emits createDandelionDFAPacketizer().  All other
+  // RISCV CPUs use SchedMachineModel without itineraries (II->isEmpty()).
+  if (II && !II->isEmpty())
+    return static_cast<const RISCVSubtarget &>(STI)
+        .createDandelionDFAPacketizer(II);
+  return nullptr;
 }

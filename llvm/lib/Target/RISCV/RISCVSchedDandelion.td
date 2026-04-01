@@ -324,7 +324,14 @@ def RISCVDandelionItineraries : ProcessorItineraries<
     DandelionIIC_Atomic,
     DandelionIIC_Nop
   ]
->;
+> {
+  // Setting PacketizerNamespace causes llvm-tblgen to generate a dedicated
+  // DFA automaton and a createDandelionDFAPacketizer() method on
+  // RISCVGenSubtargetInfo.  Without this, the DFA table is empty and the
+  // packetizer accepts an unlimited number of instructions per packet,
+  // violating the 2-slot iMul/Div and 2-slot LSU resource constraints.
+  let PacketizerNamespace = "Dandelion";
+}
 
 //===----------------------------------------------------------------------===//
 // SchedMachineModel

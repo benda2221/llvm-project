@@ -119,6 +119,10 @@ static cl::opt<bool>
                            cl::desc("Enable Machine Pipeliner for RISC-V"),
                            cl::init(false), cl::Hidden);
 
+static cl::opt<bool> DisableRISCVPacketizer(
+    "riscv-disable-packetizer", cl::Hidden,
+    cl::desc("Disable the RISCV VLIW packetizer pass"), cl::init(false));
+
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> X(getTheRISCV32Target());
   RegisterTargetMachine<RISCVTargetMachine> Y(getTheRISCV64Target());
@@ -601,7 +605,8 @@ void RISCVPassConfig::addPreEmitPass2() {
 
   // VLIW packetizer runs on the final MI stream
   // so that bundles remain valid until emission.
-  addPass(createRISCVPacketizerPass());
+  if (!DisableRISCVPacketizer)
+    addPass(createRISCVPacketizerPass());
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {

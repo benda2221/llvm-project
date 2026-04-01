@@ -1759,21 +1759,27 @@ def PseudoLongBGE : LongBccPseudo;
 def PseudoLongBLTU : LongBccPseudo;
 def PseudoLongBGEU : LongBccPseudo;
 
-let isBarrier = 1, isBranch = 1, isTerminator = 1 in
+let isBarrier = 1, isBranch = 1, isTerminator = 1, Itinerary = IIC_Jump in
 def PseudoBR : Pseudo<(outs), (ins simm21_lsb0_jal:$imm20), [(br bb:$imm20)]>,
-               PseudoInstExpansion<(JAL X0, simm21_lsb0_jal:$imm20)>;
+               PseudoInstExpansion<(JAL X0, simm21_lsb0_jal:$imm20)>,
+               Sched<[WriteJal]>;
 
 let Predicates = [NoStdExtZicfilp],
-    isBarrier = 1, isBranch = 1, isIndirectBranch = 1, isTerminator = 1 in
+    isBarrier = 1, isBranch = 1, isIndirectBranch = 1, isTerminator = 1,
+    Itinerary = IIC_Jump in
 def PseudoBRIND : Pseudo<(outs), (ins GPRJALR:$rs1, simm12:$imm12), []>,
-                  PseudoInstExpansion<(JALR X0, GPR:$rs1, simm12:$imm12)>;
+                  PseudoInstExpansion<(JALR X0, GPR:$rs1, simm12:$imm12)>,
+                  Sched<[WriteJalr, ReadJalr]>;
 
 let Predicates = [HasStdExtZicfilp],
-    isBarrier = 1, isBranch = 1, isIndirectBranch = 1, isTerminator = 1 in {
+    isBarrier = 1, isBranch = 1, isIndirectBranch = 1, isTerminator = 1,
+    Itinerary = IIC_Jump in {
 def PseudoBRINDNonX7 : Pseudo<(outs), (ins GPRJALRNonX7:$rs1, simm12:$imm12), []>,
-                       PseudoInstExpansion<(JALR X0, GPR:$rs1, simm12:$imm12)>;
+                       PseudoInstExpansion<(JALR X0, GPR:$rs1, simm12:$imm12)>,
+                       Sched<[WriteJalr, ReadJalr]>;
 def PseudoBRINDX7 : Pseudo<(outs), (ins GPRX7:$rs1, simm12:$imm12), []>,
-                    PseudoInstExpansion<(JALR X0, GPR:$rs1, simm12:$imm12)>;
+                    PseudoInstExpansion<(JALR X0, GPR:$rs1, simm12:$imm12)>,
+                    Sched<[WriteJalr, ReadJalr]>;
 }
 
 // For Zicfilp, need to avoid using X7/T2 for indirect branches which need
@@ -1826,21 +1832,25 @@ let isCall = 1, Defs = [X1] in {
 let Predicates = [NoStdExtZicfilp] in
 def PseudoCALLIndirect : Pseudo<(outs), (ins GPRJALR:$rs1),
                                 [(riscv_call GPRJALR:$rs1)]>,
-                         PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>;
+                         PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>,
+                         Sched<[WriteJalr, ReadJalr]>;
 let Predicates = [HasStdExtZicfilp] in {
 def PseudoCALLIndirectNonX7 : Pseudo<(outs), (ins GPRJALRNonX7:$rs1),
                                      [(riscv_call GPRJALRNonX7:$rs1)]>,
-                              PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>;
+                              PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>,
+                              Sched<[WriteJalr, ReadJalr]>;
 // For large code model, non-indirect calls could be software-guarded
 def PseudoCALLIndirectX7 : Pseudo<(outs), (ins GPRX7:$rs1),
                                   [(riscv_sw_guarded_call GPRX7:$rs1)]>,
-                           PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>;
+                           PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>,
+                           Sched<[WriteJalr, ReadJalr]>;
 }
 }
 
-let isBarrier = 1, isReturn = 1, isTerminator = 1 in
+let isBarrier = 1, isReturn = 1, isTerminator = 1, Itinerary = IIC_Jump in
 def PseudoRET : Pseudo<(outs), (ins), [(riscv_ret_glue)]>,
-                PseudoInstExpansion<(JALR X0, X1, 0)>;
+                PseudoInstExpansion<(JALR X0, X1, 0)>,
+                Sched<[WriteJalr]>;
 
 // PseudoTAIL is a pseudo instruction similar to PseudoCALL and will eventually
 // expand to auipc and jalr while encoding.
@@ -1855,15 +1865,18 @@ let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1, Uses = [X2] in {
 let Predicates = [NoStdExtZicfilp] in
 def PseudoTAILIndirect : Pseudo<(outs), (ins GPRTC:$rs1),
                                 [(riscv_tail GPRTC:$rs1)]>,
-                         PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)>;
+                         PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)>,
+                         Sched<[WriteJalr, ReadJalr]>;
 let Predicates = [HasStdExtZicfilp] in {
 def PseudoTAILIndirectNonX7 : Pseudo<(outs), (ins GPRTCNonX7:$rs1),
                                      [(riscv_tail GPRTCNonX7:$rs1)]>,
-                              PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)>;
+                              PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)>,
+                              Sched<[WriteJalr, ReadJalr]>;
 // For large code model, non-indirect calls could be software-guarded
 def PseudoTAILIndirectX7 : Pseudo<(outs), (ins GPRX7:$rs1),
                                   [(riscv_sw_guarded_tail GPRX7:$rs1)]>,
-                           PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)>;
+                           PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)>,
+                           Sched<[WriteJalr, ReadJalr]>;
 }
 }
 
