@@ -147,6 +147,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   initializeRISCVVLOptimizerPass(*PR);
   initializeRISCVVMV0EliminationPass(*PR);
   initializeRISCVPacketizerPass(*PR);
+  initializeRISCVPackPaddingPass(*PR);
   initializeRISCVInsertVSETVLIPass(*PR);
   initializeRISCVInsertReadWriteCSRPass(*PR);
   initializeRISCVInsertWriteVXRMPass(*PR);
@@ -607,6 +608,11 @@ void RISCVPassConfig::addPreEmitPass2() {
   // so that bundles remain valid until emission.
   if (!DisableRISCVPacketizer)
     addPass(createRISCVPacketizerPass());
+
+  // Pad every bundle to exactly 8 slots by inserting NOPs into empty slots
+  // and reordering instructions to match their assigned slot positions.
+  // The pass checks riscv-disable-packetpadding internally.
+  addPass(createRISCVPackPaddingPass());
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {

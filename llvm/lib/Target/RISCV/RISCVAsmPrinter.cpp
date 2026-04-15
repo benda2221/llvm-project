@@ -307,6 +307,17 @@ void RISCVAsmPrinter::emitNTLHint(const MachineInstr *MI) {
 void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
   RISCV_MC::verifyInstructionPredicates(MI->getOpcode(), STI->getFeatureBits());
 
+  // Handle BUNDLE instructions by emitting each bundled instruction in order.
+  if (MI->isBundle()) {
+    const MachineBasicBlock *MBB = MI->getParent();
+    for (auto MII = std::next(MI->getIterator());
+         MII != MBB->instr_end() && MII->isInsideBundle(); ++MII) {
+      if (!MII->isDebugInstr())
+        emitInstruction(&*MII);
+    }
+    return;
+  }
+
   emitNTLHint(MI);
 
   // Do any auto-generated pseudo lowerings.
