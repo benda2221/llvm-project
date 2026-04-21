@@ -106,16 +106,18 @@ bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
     // Loop over all of the basic blocks.
     for (MachineBasicBlock &MB : MF) {
         auto End = MB.end();
-        // The packetizable region: from the first non-terminator instruction
-        // to the first terminator instruction (inclusive).
+        // The packetizable region covers all instructions in the block,
+        // including blocks that consist solely of terminator instructions
+        // (e.g., a standalone unconditional branch).
         MachineBasicBlock::iterator RB = MB.begin();
-        while (RB != End && RB->isTerminator())
-            ++RB;
         MachineBasicBlock::iterator RE = RB;
+        // Advance past all non-terminator instructions.
         while (RE != End && !RE->isTerminator())
             ++RE;
-        // Include the first terminator instruction if present.
-        if (RE != End)
+        // Include all consecutive terminator instructions so that every
+        // branch / jump in the block is wrapped into a BUNDLE and can be
+        // padded to the full issue-width by RISCVPackPadding.
+        while (RE != End && RE->isTerminator())
             ++RE;
         if (RB != RE)
             Packetizer.PacketizeMIs(&MB, RB, RE);

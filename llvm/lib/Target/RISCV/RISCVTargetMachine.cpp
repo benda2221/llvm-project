@@ -613,6 +613,9 @@ void RISCVPassConfig::addPreEmitPass2() {
   // and reordering instructions to match their assigned slot positions.
   // The pass checks riscv-disable-packetpadding internally.
   addPass(createRISCVPackPaddingPass());
+
+  // Unpack machine bundles to emit each bundled instruction in order.
+  addPass(createUnpackMachineBundles(nullptr));
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {

@@ -308,15 +308,26 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
   RISCV_MC::verifyInstructionPredicates(MI->getOpcode(), STI->getFeatureBits());
 
   // Handle BUNDLE instructions by emitting each bundled instruction in order.
-  if (MI->isBundle()) {
-    const MachineBasicBlock *MBB = MI->getParent();
-    for (auto MII = std::next(MI->getIterator());
-         MII != MBB->instr_end() && MII->isInsideBundle(); ++MII) {
-      if (!MII->isDebugInstr())
-        emitInstruction(&*MII);
-    }
-    return;
-  }
+  // if (MI->isBundle()) {
+  //   const MachineBasicBlock *MBB = MI->getParent();
+  //   for (auto MII = std::next(MI->getIterator());
+  //        MII != MBB->instr_end() && MII->isInsideBundle(); ++MII) {
+  //     if (MII->isDebugInstr())
+  //       continue;
+  //     // Skip pseudo instructions with no assembly representation (e.g.
+  //     // IMPLICIT_DEF) that the InstPrinter cannot handle (Bits == 0).
+  //     if (MII->isImplicitDef() || MII->isCopy() || MII->isKill())
+  //       continue;
+  //     // Inline asm must be handled via emitInlineAsmInstruction, not lowerToMCInst.
+  //     if (MII->getOpcode() == TargetOpcode::INLINEASM ||
+  //         MII->getOpcode() == TargetOpcode::INLINEASM_BR) {
+  //       emitInlineAsmInstruction(&*MII);
+  //       continue;
+  //     }
+  //     emitInstruction(&*MII);
+  //   }
+  //   return;
+  // }
 
   emitNTLHint(MI);
 

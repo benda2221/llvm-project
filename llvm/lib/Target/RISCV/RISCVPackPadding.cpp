@@ -106,13 +106,23 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
   assert(Bundle.isBundle() && "Expected a BUNDLE instruction");
 
   // -------------------------------------------------------------------------
-  // Step 1: Collect the real instructions inside the bundle.
+  // Step 1: Collect instructions inside the bundle.
+  //         Debug instructions are tracked separately and re-inserted outside
+  //         the rebuilt bundle so they do not consume hardware slots.
   // -------------------------------------------------------------------------
+  SmallVector<MachineInstr *, 8> BundleMembers;
   SmallVector<MachineInstr *, 8> Instrs;
+  SmallVector<MachineInstr *, 4> DebugInstrs;
   for (MachineBasicBlock::instr_iterator It = std::next(Bundle.getIterator()),
                                          E = MBB.instr_end();
-       It != E && It->isInsideBundle(); ++It)
-    Instrs.push_back(&*It);
+       It != E && It->isInsideBundle(); ++It) {
+    MachineInstr *MI = &*It;
+    BundleMembers.push_back(MI);
+    if (MI->isDebugInstr())
+      DebugInstrs.push_back(MI);
+    else
+      Instrs.push_back(MI);
+  }
 
   if (Instrs.empty())
     return false;
@@ -173,14 +183,14 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
   // Capture InsertPt BEFORE any removal: points to the instruction after the
   // last bundle member.  This is stable because it is not part of the bundle.
   MachineBasicBlock::instr_iterator InsertPt =
-      std::next(Instrs.back()->getIterator());
+      std::next(BundleMembers.back()->getIterator());
 
   // Clear bundle flags on the BUNDLE header.
   Bundle.clearFlag(MachineInstr::BundledSucc);
   Bundle.clearFlag(MachineInstr::BundledPred);
 
   // Clear bundle flags and internal-read operand flags on all members.
-  for (MachineInstr *MI : Instrs) {
+  for (MachineInstr *MI : BundleMembers) {
     MI->clearFlag(MachineInstr::BundledPred);
     MI->clearFlag(MachineInstr::BundledSucc);
     for (MachineOperand &MO : MI->operands())
@@ -193,7 +203,7 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
 
   // Remove all members from the MBB.  InsertPt remains valid because it points
   // to an instruction that is neither the header nor any member.
-  for (MachineInstr *MI : Instrs)
+  for (MachineInstr *MI : BundleMembers)
     MI->removeFromParent();
 
   // -------------------------------------------------------------------------
@@ -244,6 +254,12 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
   // -------------------------------------------------------------------------
   assert(FirstSet && "No instructions inserted");
   finalizeBundle(MBB, FirstInserted, InsertPt);
+
+  // Re-insert debug instructions after the rebuilt bundle. They should not
+  // consume VLIW slots, but keeping them near the original location preserves
+  // useful debug ordering.
+  for (MachineInstr *DMI : DebugInstrs)
+    MBB.insert(InsertPt, DMI);
 
   return NopInserted;
 }

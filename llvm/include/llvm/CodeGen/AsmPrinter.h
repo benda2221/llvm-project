@@ -951,6 +951,12 @@ private:
   bool shouldEmitLabelForBasicBlock(const MachineBasicBlock &MBB) const;
 
 protected:
+  // /// Emit an inline asm MachineInstr. Provided for subclasses that need to
+  // /// emit inline asm from non-standard contexts (e.g., inside a BUNDLE).
+  // void emitInlineAsmInstruction(const MachineInstr *MI) const {
+  //   emitInlineAsm(MI);
+  // }
+
   virtual void emitJumpTableEntry(const MachineJumpTableInfo &MJTI,
                                   const MachineBasicBlock *MBB,
                                   unsigned uid) const;

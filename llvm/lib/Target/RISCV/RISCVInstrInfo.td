@@ -1806,7 +1806,7 @@ def : Pat<(brind (add GPRJALR:$rs1, simm12:$imm12)),
 // Define AsmString to print "call" when compile with -S flag.
 // Define isCodeGenOnly = 0 to support parsing assembly "call" instruction.
 let isCall = 1, isBarrier = 1, isCodeGenOnly = 0, Size = 8, hasSideEffects = 0,
-    mayStore = 0, mayLoad = 0 in
+    mayStore = 0, mayLoad = 0, Itinerary = IIC_Jump in
 def PseudoCALLReg : Pseudo<(outs GPR:$rd), (ins call_symbol:$func), [],
                            "call", "$rd, $func">,
                     Sched<[WriteIALU, WriteJalr, ReadJalr]>;
@@ -1817,7 +1817,7 @@ def PseudoCALLReg : Pseudo<(outs GPR:$rd), (ins call_symbol:$func), [],
 // if the offset fits in a signed 21-bit immediate.
 // Define AsmString to print "call" when compile with -S flag.
 // Define isCodeGenOnly = 0 to support parsing assembly "call" instruction.
-let isCall = 1, Defs = [X1], isCodeGenOnly = 0, Size = 8 in
+let isCall = 1, Defs = [X1], isCodeGenOnly = 0, Size = 8, Itinerary = IIC_Jump in
 def PseudoCALL : Pseudo<(outs), (ins call_symbol:$func), [],
                         "call", "$func">,
                  Sched<[WriteIALU, WriteJalr, ReadJalr]>;
@@ -1828,7 +1828,7 @@ def : Pat<(riscv_call texternalsym:$func), (PseudoCALL texternalsym:$func)>;
 def : Pat<(riscv_sret_glue), (SRET)>;
 def : Pat<(riscv_mret_glue), (MRET)>;
 
-let isCall = 1, Defs = [X1] in {
+let isCall = 1, Defs = [X1], Itinerary = IIC_Jump in {
 let Predicates = [NoStdExtZicfilp] in
 def PseudoCALLIndirect : Pseudo<(outs), (ins GPRJALR:$rs1),
                                 [(riscv_call GPRJALR:$rs1)]>,
@@ -1856,12 +1856,13 @@ def PseudoRET : Pseudo<(outs), (ins), [(riscv_ret_glue)]>,
 // expand to auipc and jalr while encoding.
 // Define AsmString to print "tail" when compile with -S flag.
 let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1, Uses = [X2],
-    Size = 8, isCodeGenOnly = 0 in
+    Size = 8, isCodeGenOnly = 0, Itinerary = IIC_Jump in
 def PseudoTAIL : Pseudo<(outs), (ins call_symbol:$dst), [],
                         "tail", "$dst">,
                  Sched<[WriteIALU, WriteJalr, ReadJalr]>;
 
-let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1, Uses = [X2] in {
+let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1, Uses = [X2],
+    Itinerary = IIC_Jump in {
 let Predicates = [NoStdExtZicfilp] in
 def PseudoTAILIndirect : Pseudo<(outs), (ins GPRTC:$rs1),
                                 [(riscv_tail GPRTC:$rs1)]>,
@@ -1886,7 +1887,8 @@ def : Pat<(riscv_tail (iPTR texternalsym:$dst)),
           (PseudoTAIL texternalsym:$dst)>;
 
 let isCall = 0, isBarrier = 1, isBranch = 1, isTerminator = 1, Size = 8,
-    isCodeGenOnly = 0, hasSideEffects = 0, mayStore = 0, mayLoad = 0 in
+    isCodeGenOnly = 0, hasSideEffects = 0, mayStore = 0, mayLoad = 0,
+    Itinerary = IIC_Jump in
 def PseudoJump : Pseudo<(outs GPR:$rd), (ins pseudo_jump_symbol:$target), [],
                         "jump", "$target, $rd">,
                  Sched<[WriteIALU, WriteJalr, ReadJalr]>;

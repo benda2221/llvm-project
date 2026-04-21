@@ -12,6 +12,7 @@ if(BOLT_BUILT_STANDALONE)
   tablegen(LLVM RISCVGenRegisterInfo.inc -gen-register-info)
   tablegen(LLVM RISCVGenSearchableTables.inc -gen-searchable-tables)
   tablegen(LLVM RISCVGenSubtargetInfo.inc -gen-subtarget)
+  tablegen(LLVM RISCVGenDFAPacketizer.inc -gen-dfa-packetizer)
 
   add_public_tablegen_target(RISCVCommonTableGen)
   include_directories(${CMAKE_CURRENT_BINARY_DIR})
