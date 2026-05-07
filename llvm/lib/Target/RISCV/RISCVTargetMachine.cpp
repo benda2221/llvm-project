@@ -148,6 +148,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   initializeRISCVVMV0EliminationPass(*PR);
   initializeRISCVPacketizerPass(*PR);
   initializeRISCVPackPaddingPass(*PR);
+  initializeRISCVRelayoutPass(*PR);
   initializeRISCVInsertVSETVLIPass(*PR);
   initializeRISCVInsertReadWriteCSRPass(*PR);
   initializeRISCVInsertWriteVXRMPass(*PR);
@@ -616,6 +617,10 @@ void RISCVPassConfig::addPreEmitPass2() {
 
   // Unpack machine bundles to emit each bundled instruction in order.
   addPass(createUnpackMachineBundles(nullptr));
+
+  // Same branch-range algorithm as CodeGen branch relaxation; run again after
+  // unpack when late VLIW padding may have stretched displacements.
+  addPass(createRISCVRelayoutPass());
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {

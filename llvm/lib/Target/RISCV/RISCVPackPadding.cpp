@@ -20,7 +20,7 @@
 //          WAW-safe input order produced by the packetizer.
 //   3. Inserts NOP instructions into unoccupied slots so that every BUNDLE
 //      contains exactly 8 instructions (one per slot 0-7):
-//        - SLOT 0 (FDivFPUPipeline): FSGNJ_S ft0, ft0, ft0  (fp NOP)
+//        - SLOT 0 (FDivFPUPipeline): FEQ_S   x0, f0, f0      (fp-class filler)
 //        - SLOT 1-7 (ALU pipelines): ADDI x0, x0, 0         (integer NOP)
 //   4. Re-finalizes the BUNDLE with the new slot order.
 //
@@ -221,17 +221,16 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
       MBB.insert(InsertPt, MI);
       LLVM_DEBUG(dbgs() << "  Slot " << Slot << " <- " << *MI);
     } else if (Slot == 0) {
-      // SLOT 0 is the FDivFPUPipeline; fill with a floating-point NOP.
-      // FSGNJ_S ft0, ft0, ft0 copies ft0's sign+magnitude into ft0 itself
-      // — a no-op that is legal on SLOT 0 and has no observable effect.
+      // SLOT 0 is the FDivFPUPipeline; fill with a floating-point-class
+      // instruction requested by the backend flow.
       // Source operands are marked undef so the verifier does not require
-      // a prior definition of ft0.
-      MI = BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::FSGNJ_S))
-               .addDef(RISCV::F0_F)
+      // a prior definition of f0.
+      MI = BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::FEQ_S))
+               .addDef(RISCV::X0)
                .addReg(RISCV::F0_F, RegState::Undef)
                .addReg(RISCV::F0_F, RegState::Undef);
       NopInserted = true;
-      LLVM_DEBUG(dbgs() << "  Slot 0 <- FP NOP (fsgnj.s ft0, ft0, ft0)\n");
+      LLVM_DEBUG(dbgs() << "  Slot 0 <- FP NOP (feq.s x0, f0, f0)\n");
     } else {
       // SLOT 1-7 are ALU-capable pipelines; fill with an integer NOP.
       MI = BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))

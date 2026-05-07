@@ -59,6 +59,7 @@ add_llvm_target(RISCVCodeGen
   RISCVOptWInstrs.cpp
   RISCVPacketizer.cpp
   RISCVPackPadding.cpp
+  RISCVRelayout.cpp
   RISCVPostRAExpandPseudoInsts.cpp
   RISCVPushPopOptimizer.cpp
   RISCVRedundantCopyElimination.cpp

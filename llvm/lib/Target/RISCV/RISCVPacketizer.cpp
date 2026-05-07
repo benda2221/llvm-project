@@ -404,6 +404,12 @@ bool RISCVPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) {
 }
 
 bool RISCVPacketizerList::shouldAddToPacket(const MachineInstr &MI) {
+    // If SLOT7 (res bit 0x80, IIC_Jump) is already occupied by an instruction
+    // in the current packet, no further instruction may join this packet.
+    for (unsigned i = 0; i < CurrentPacketMIs.size(); ++i) {
+        if (ResourceTracker->getUsedResources(i) & 0x80)
+            return false;
+    }
     return true;
 }
 
