@@ -609,18 +609,18 @@ void RISCVPassConfig::addPreEmitPass2() {
   // so that bundles remain valid until emission.
   if (!DisableRISCVPacketizer)
     addPass(createRISCVPacketizerPass());
-
+  
   // Pad every bundle to exactly 8 slots by inserting NOPs into empty slots
   // and reordering instructions to match their assigned slot positions.
   // The pass checks riscv-disable-packetpadding internally.
   addPass(createRISCVPackPaddingPass());
 
+  // Bundle-based branch-range algorithm ; run again after Packetizer 
+  // to ensure the branch range is correct.
+  addPass(createRISCVRelayoutPass());
+
   // Unpack machine bundles to emit each bundled instruction in order.
   addPass(createUnpackMachineBundles(nullptr));
-
-  // Same branch-range algorithm as CodeGen branch relaxation; run again after
-  // unpack when late VLIW padding may have stretched displacements.
-  addPass(createRISCVRelayoutPass());
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {
