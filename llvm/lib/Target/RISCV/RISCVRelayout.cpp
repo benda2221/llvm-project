@@ -10,6 +10,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCV.h"
+#include "RISCVInstrInfo.h"
+#include "RISCVSubtarget.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
@@ -17,6 +19,8 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
@@ -24,6 +28,7 @@
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
@@ -31,6 +36,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <iterator>
@@ -59,6 +65,43 @@ STATISTIC(RISCVRelayoutNumConditionalRelaxed, "[riscv-relayout] Number of condit
 STATISTIC(RISCVRelayoutNumUnconditionalRelaxed, "[riscv-relayout] Number of unconditional branches relaxed");
 
 #define RISCV_RELAYOUT_PASS_NAME "RISC-V relayout pass"
+
+// Number of VLIW slots in the Dandelion processor (mirrors RISCVPackPadding).
+static constexpr unsigned DandelionSlotsRL = 8;
+
+// Return the legal slot bitmask (bit N == SLOT N) for the given SchedClass,
+// derived from the itinerary stage FuncUnits.  Returns 0xFF (any slot) when
+// itinerary data is absent.
+static uint8_t getSlotMaskRL(unsigned SchedClass,
+                              const InstrItineraryData *IID) {
+  if (!IID || IID->isEmpty())
+    return 0xFF;
+  const InstrStage *IS = IID->beginStage(SchedClass);
+  const InstrStage *End = IID->endStage(SchedClass);
+  uint8_t Mask = 0;
+  for (; IS != End; ++IS)
+    Mask |= static_cast<uint8_t>(IS->getUnits());
+  return Mask;
+}
+
+// Returns true if MI is one of the NOP forms inserted by RISCVPackPadding:
+//   SLOT0: FEQ.S x0, f0, f0
+//   SLOT1-7: ADDI x0, x0, 0
+static bool isNopMI(const MachineInstr &MI) {
+  if (MI.getOpcode() == RISCV::ADDI) {
+    return MI.getOperand(0).isReg() &&
+           MI.getOperand(0).getReg() == RISCV::X0 &&
+           MI.getOperand(1).isReg() &&
+           MI.getOperand(1).getReg() == RISCV::X0 &&
+           MI.getOperand(2).isImm() &&
+           MI.getOperand(2).getImm() == 0;
+  }
+  if (MI.getOpcode() == RISCV::FEQ_S) {
+    return MI.getOperand(0).isReg() &&
+           MI.getOperand(0).getReg() == RISCV::X0;
+  }
+  return false;
+}
 
 namespace {
 
@@ -110,6 +153,9 @@ class RISCVRelayoutImpl {
   const TargetRegisterInfo *TRI = nullptr;
   const TargetInstrInfo *TII = nullptr;
   const TargetMachine *TM = nullptr;
+  // RISCV-specific pointers for VLIW bundle construction in new blocks.
+  const RISCVInstrInfo *RII = nullptr;
+  const InstrItineraryData *IID = nullptr;
 
   bool relaxBranchInstructions();
   void scanFunction();
@@ -135,6 +181,8 @@ class RISCVRelayoutImpl {
 
   bool fixupConditionalBranch(MachineInstr &MI);
   bool fixupUnconditionalBranch(MachineInstr &MI);
+  void wrapInVLIWBundle(MachineBasicBlock &NewBB);
+  void wrapStandaloneBranchesInMBB(MachineBasicBlock &MBB);
   uint64_t computeBlockSize(const MachineBasicBlock &MBB) const;
   unsigned getInstrOffset(const MachineInstr &MI) const;
   void dumpBBs();
@@ -403,6 +451,143 @@ bool RISCVRelayoutImpl::isBlockInRange(const MachineInstr &MI,
   return false;
 }
 
+/// wrapInVLIWBundle - Wrap all non-debug instructions in NewBB into a single
+/// 8-slot VLIW bundle, filling empty slots with NOPs:
+///   SLOT 0 (FDivFPUPipeline): FEQ.S  x0, f0, f0
+///   SLOT 1-7 (ALU pipelines): ADDI   x0, x0, 0
+/// No-ops when itinerary data is absent (non-Dandelion target).
+void RISCVRelayoutImpl::wrapInVLIWBundle(MachineBasicBlock &NewBB) {
+  if (!RII || !IID || IID->isEmpty())
+    return;
+
+  // Collect the real (non-debug) instructions to be bundled.
+  SmallVector<MachineInstr *, DandelionSlotsRL> Instrs;
+  for (MachineInstr &MI : NewBB)
+    if (!MI.isDebugInstr())
+      Instrs.push_back(&MI);
+  if (Instrs.empty())
+    return;
+
+  // Compute legal slot masks via the itinerary stage FuncUnit bitmask.
+  SmallVector<uint8_t, DandelionSlotsRL> SlotMasks(Instrs.size());
+  for (unsigned i = 0, e = Instrs.size(); i != e; ++i)
+    SlotMasks[i] = getSlotMaskRL(Instrs[i]->getDesc().getSchedClass(), IID);
+
+  // Greedy left-to-right slot assignment: each instruction takes the lowest
+  // available legal slot, preserving in-order WAW safety (mirrors PackPadding).
+  uint8_t OccupiedSlots = 0;
+  SmallVector<int, DandelionSlotsRL> AssignedSlot(Instrs.size(), -1);
+  for (unsigned i = 0, e = Instrs.size(); i != e; ++i) {
+    uint8_t Legal = SlotMasks[i] & ~OccupiedSlots;
+    if (!Legal)
+      Legal = ~OccupiedSlots & 0xFF; // fallback: any free slot
+    AssignedSlot[i] = __builtin_ctz(Legal);
+    OccupiedSlots |= static_cast<uint8_t>(1u << AssignedSlot[i]);
+  }
+
+  // Build a slot-indexed array; nullptr means the slot needs a NOP.
+  std::array<MachineInstr *, DandelionSlotsRL> SlotInstr;
+  SlotInstr.fill(nullptr);
+  for (unsigned i = 0, e = Instrs.size(); i != e; ++i)
+    SlotInstr[AssignedSlot[i]] = Instrs[i];
+
+  // Detach all real instructions; remember where to re-insert them.
+  MachineBasicBlock::instr_iterator InsertPt = NewBB.instr_end();
+  for (MachineInstr *MI : Instrs)
+    MI->removeFromParent();
+
+  // Re-insert instructions in slot order, filling gaps with NOPs.
+  MachineBasicBlock::instr_iterator FirstInserted;
+  bool FirstSet = false;
+  for (unsigned Slot = 0; Slot < DandelionSlotsRL; ++Slot) {
+    MachineInstr *MI;
+    if (SlotInstr[Slot]) {
+      MI = SlotInstr[Slot];
+      NewBB.insert(InsertPt, MI);
+    } else if (Slot == 0) {
+      // SLOT 0 is the FDivFPU pipeline; fill with the FP-class NOP.
+      MI = BuildMI(NewBB, InsertPt, DebugLoc(), RII->get(RISCV::FEQ_S))
+               .addDef(RISCV::X0)
+               .addReg(RISCV::F0_F, RegState::Undef)
+               .addReg(RISCV::F0_F, RegState::Undef);
+    } else {
+      // SLOT 1-7 are ALU-capable pipelines; fill with an integer NOP.
+      MI = BuildMI(NewBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
+               .addDef(RISCV::X0)
+               .addReg(RISCV::X0)
+               .addImm(0);
+    }
+    if (!FirstSet) {
+      FirstInserted = MI->getIterator();
+      FirstSet = true;
+    }
+  }
+
+  assert(FirstSet && "wrapInVLIWBundle: no instructions were inserted");
+  finalizeBundle(NewBB, FirstInserted, InsertPt);
+
+  // Update the stored block size so offset calculations stay accurate.
+  BlockInfo[NewBB.getNumber()].Size = computeBlockSize(NewBB);
+}
+
+/// wrapStandaloneBranchesInMBB - Wrap each standalone (non-bundled) branch
+/// instruction at the tail of MBB into its own 8-slot VLIW bundle:
+///   SLOT0: FEQ.S x0, f0, f0  (FDivFPU NOP)
+///   SLOT1-6: ADDI x0, x0, 0  (ALU NOP)
+///   SLOT7: the branch instruction
+/// Called after TII->insertBranch() adds new terminator(s) to an existing block.
+void RISCVRelayoutImpl::wrapStandaloneBranchesInMBB(MachineBasicBlock &MBB) {
+  if (!RII || !IID || IID->isEmpty())
+    return;
+
+  // Collect standalone (non-bundled) branch instructions at the end of MBB.
+  SmallVector<MachineInstr *, 4> Branches;
+  for (auto I = MBB.instr_rbegin(); I != MBB.instr_rend(); ++I) {
+    if (I->isDebugInstr())
+      continue;
+    if (I->isInsideBundle() || I->isBundle())
+      break;
+    if (!I->isBranch())
+      break;
+    Branches.push_back(&*I);
+  }
+  if (Branches.empty())
+    return;
+
+  // Process in forward (program) order so bundles are emitted in order.
+  std::reverse(Branches.begin(), Branches.end());
+
+  for (MachineInstr *BrMI : Branches) {
+    // Each branch gets its own 8-slot bundle with the branch at SLOT7.
+    MachineBasicBlock::instr_iterator InsertPt =
+        std::next(BrMI->getIterator());
+
+    BrMI->removeFromParent();
+
+    // SLOT0: FEQ.S x0, f0, f0
+    MachineInstr *S0 = BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::FEQ_S))
+                           .addDef(RISCV::X0)
+                           .addReg(RISCV::F0_F, RegState::Undef)
+                           .addReg(RISCV::F0_F, RegState::Undef);
+    auto FirstInstr = S0->getIterator();
+
+    // SLOT1-6: ADDI x0, x0, 0
+    for (unsigned S = 1; S < 7; ++S)
+      BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
+          .addDef(RISCV::X0)
+          .addReg(RISCV::X0)
+          .addImm(0);
+
+    // SLOT7: branch
+    MBB.insert(InsertPt, BrMI);
+
+    finalizeBundle(MBB, FirstInstr, InsertPt);
+  }
+
+  // Recompute block size (each 4-byte branch is now inside a 32-byte bundle).
+  BlockInfo[MBB.getNumber()].Size = computeBlockSize(MBB);
+}
+
 /// fixupConditionalBranch - Fix up a conditional branch whose destination is
 /// too far away to fit in its displacement field. It is converted to an inverse
 /// conditional branch + an unconditional branch to the destination.
@@ -486,8 +671,10 @@ bool RISCVRelayoutImpl::fixupConditionalBranch(MachineInstr &MI) {
       // Replace branch in the current (MBB) block.
       removeBranch(MBB);
       insertBranch(MBB, NewBB, FBB, Cond);
+      wrapStandaloneBranchesInMBB(*MBB);
 
       TrampolineInsertionPoint = NewBB;
+      wrapInVLIWBundle(*NewBB);
       updateOffsetAndLiveness(NewBB);
       return true;
     }
@@ -525,6 +712,7 @@ bool RISCVRelayoutImpl::fixupConditionalBranch(MachineInstr &MI) {
 
       removeBranch(MBB);
       insertBranch(MBB, FBB, TBB, Cond);
+      wrapStandaloneBranchesInMBB(*MBB);
       return true;
     }
     if (FBB) {
@@ -537,6 +725,7 @@ bool RISCVRelayoutImpl::fixupConditionalBranch(MachineInstr &MI) {
       // Do it here since if there's no split, no update is needed.
       MBB->replaceSuccessor(FBB, NewBB);
       NewBB->addSuccessor(FBB);
+      wrapInVLIWBundle(*NewBB);
       updateOffsetAndLiveness(NewBB);
     }
 
@@ -551,6 +740,13 @@ bool RISCVRelayoutImpl::fixupConditionalBranch(MachineInstr &MI) {
     removeBranch(MBB);
     // Insert a new conditional branch and a new unconditional branch.
     insertBranch(MBB, &NextBB, TBB, Cond);
+    wrapStandaloneBranchesInMBB(*MBB);
+    // Force the label for NextBB: after UnpackMachineBundles the VLIW NOPs
+    // from the branch bundle will be interleaved between the two terminators,
+    // so AsmPrinter::getFirstTerminator() stops at those NOPs and never sees
+    // the conditional branch to NextBB. Setting LabelMustBeEmitted ensures
+    // the label is always emitted regardless of fall-through analysis.
+    NextBB.setLabelMustBeEmitted();
     return true;
   }
   // Branch cond can't be inverted.
@@ -589,7 +785,9 @@ bool RISCVRelayoutImpl::fixupConditionalBranch(MachineInstr &MI) {
   // Replace branch in the current (MBB) block.
   removeBranch(MBB);
   insertBranch(MBB, NewBB, FBB, Cond);
+  wrapStandaloneBranchesInMBB(*MBB);
 
+  wrapInVLIWBundle(*NewBB);
   updateOffsetAndLiveness(NewBB);
   return true;
 }
@@ -647,6 +845,9 @@ bool RISCVRelayoutImpl::fixupUnconditionalBranch(MachineInstr &MI) {
                                 : DestOffset - SrcOffset,
                             RS.get());
 
+  // Wrap the newly created block in a VLIW bundle before updating sizes.
+  wrapInVLIWBundle(*BranchBB);
+
   // Update the block size and offset for the BranchBB (which may be newly
   // created).
   BlockInfo[BranchBB->getNumber()].Size = computeBlockSize(*BranchBB);
@@ -660,6 +861,7 @@ bool RISCVRelayoutImpl::fixupUnconditionalBranch(MachineInstr &MI) {
         DestBB->getSectionID() != MBBSectionID::ColdSectionID) {
       MachineBasicBlock *NewBB = createNewBlockAfter(*TrampolineInsertionPoint);
       TII->insertUnconditionalBranch(*NewBB, DestBB, DebugLoc());
+      wrapInVLIWBundle(*NewBB);
       BlockInfo[NewBB->getNumber()].Size = computeBlockSize(*NewBB);
       adjustBlockOffsets(*TrampolineInsertionPoint,
                          std::next(NewBB->getIterator()));
@@ -696,6 +898,8 @@ bool RISCVRelayoutImpl::fixupUnconditionalBranch(MachineInstr &MI) {
     BranchBB->replaceSuccessor(DestBB, RestoreBB);
     if (TRI->trackLivenessAfterRegAlloc(*MF))
       computeAndAddLiveIns(LiveRegs, *RestoreBB);
+    // Wrap RestoreBB in a VLIW bundle before computing its size.
+    wrapInVLIWBundle(*RestoreBB);
     // Compute the restore block size.
     BlockInfo[RestoreBB->getNumber()].Size = computeBlockSize(*RestoreBB);
     // Update the estimated offset for the restore block.
@@ -780,6 +984,9 @@ bool RISCVRelayoutImpl::bundleAwareAnalyzeBranch(
 // Walks backward with instr_iterator, erasing branch members from their
 // bundles (or standalone branches directly).  Updates BBSize to reflect the
 // removed bytes so BlockInfo stays consistent.
+// After erasing a branch from a VLIW bundle:
+//   - if all remaining members are NOPs → delete the entire bundle
+//   - otherwise → insert an ADDI NOP to restore the 8-slot count
 unsigned RISCVRelayoutImpl::bundleAwareRemoveBranch(MachineBasicBlock &MBB,
                                                      unsigned &BBSize) {
   unsigned Count = 0;
@@ -788,9 +995,46 @@ unsigned RISCVRelayoutImpl::bundleAwareRemoveBranch(MachineBasicBlock &MBB,
   for (auto I = MBB.getFirstTerminator(); I != MBB.end(); ) {
     auto Next = std::next(I);
     if (MachineInstr *BrMI = getEffectiveBranchMI(*I)) {
-      BBSize -= TII->getInstSizeInBytes(*BrMI);
+      // Save the owning bundle header before erasing.
+      MachineInstr *BundleHdr = nullptr;
+      if (BrMI->isInsideBundle()) {
+        auto It = BrMI->getIterator();
+        while (It->isInsideBundle())
+          --It;
+        BundleHdr = &*It;
+      }
+
+      BBSize -= TII->getInstSizeInBytes(*BrMI); // -4
       BrMI->eraseFromBundle();
       ++Count;
+
+      // Post-removal bundle cleanup (VLIW-specific).
+      if (BundleHdr && RII && IID && !IID->isEmpty()) {
+        SmallVector<MachineInstr *, DandelionSlotsRL> Members;
+        bool AllNop = true;
+        for (auto Mit = std::next(BundleHdr->getIterator());
+             Mit != MBB.instr_end() && Mit->isInsideBundle(); ++Mit) {
+          Members.push_back(&*Mit);
+          if (!isNopMI(*Mit))
+            AllNop = false;
+        }
+
+        if (AllNop) {
+          // All remaining slots are NOPs → delete the entire bundle.
+          // eraseFromParent() on a BUNDLE header erases the header + all members.
+          BBSize -= (unsigned)(Members.size() * 4);
+          BundleHdr->eraseFromParent();
+        } else {
+          // Real instructions remain → restore SLOT7 with an ADDI NOP.
+          auto InsertPt = std::next(Members.back()->getIterator());
+          BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
+              .addDef(RISCV::X0)
+              .addReg(RISCV::X0)
+              .addImm(0)
+              ->bundleWithPred();
+          BBSize += 4; // NOP added; net change versus before call = 0
+        }
+      }
     }
     I = Next;
   }
@@ -900,6 +1144,12 @@ bool RISCVRelayoutImpl::run(MachineFunction &mf) {
   TM = &MF->getTarget();
 
   TRI = ST.getRegisterInfo();
+
+  // Initialize RISCV-specific pointers for VLIW bundle construction.
+  // wrapInVLIWBundle is a no-op when IID is absent (non-Dandelion targets).
+  const RISCVSubtarget &RST = MF->getSubtarget<RISCVSubtarget>();
+  RII = RST.getInstrInfo();
+  IID = RST.getInstrItineraryData();
   if (TRI->trackLivenessAfterRegAlloc(*MF))
     RS.reset(new RegScavenger());
 

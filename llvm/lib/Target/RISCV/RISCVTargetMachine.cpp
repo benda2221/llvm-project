@@ -123,6 +123,11 @@ static cl::opt<bool> DisableRISCVPacketizer(
     "riscv-disable-packetizer", cl::Hidden,
     cl::desc("Disable the RISCV VLIW packetizer pass"), cl::init(false));
 
+static cl::opt<bool> DisableRISCVRelayout(
+    "riscv-disable-relayout", cl::Hidden,
+    cl::desc("Disable the RISC-V relayout (bundle-aware branch relaxation) pass"),
+    cl::init(false));
+
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> X(getTheRISCV32Target());
   RegisterTargetMachine<RISCVTargetMachine> Y(getTheRISCV64Target());
@@ -617,7 +622,8 @@ void RISCVPassConfig::addPreEmitPass2() {
 
   // Bundle-based branch-range algorithm ; run again after Packetizer 
   // to ensure the branch range is correct.
-  addPass(createRISCVRelayoutPass());
+  if (!DisableRISCVRelayout)
+    addPass(createRISCVRelayoutPass());
 
   // Unpack machine bundles to emit each bundled instruction in order.
   addPass(createUnpackMachineBundles(nullptr));
