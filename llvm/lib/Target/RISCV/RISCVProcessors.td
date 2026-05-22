@@ -88,6 +88,8 @@ class RISCVTuneProcessorModel<string n,
 
 defvar GenericTuneFeatures = [TuneOptimizedNF2SegmentLoadStore];
 
+defvar DandelionTuneFeatures = !listconcat(GenericTuneFeatures, [TuneDandelion]);
+
 def GENERIC_RV32 : RISCVProcessorModel<"generic-rv32",
                                        NoSchedModel,
                                        [Feature32Bit,
@@ -113,7 +115,7 @@ def RISCV_DANDELION : RISCVProcessorModel<"dandelion",
                                           FeatureStdExtM,
                                           FeatureStdExtF,
                                           FeatureStdExtD],
-                                         GenericTuneFeatures>,
+                                         DandelionTuneFeatures>,
                                          GenericTuneInfo;
 
 def MIPS_P8700 : RISCVProcessorModel<"mips-p8700",

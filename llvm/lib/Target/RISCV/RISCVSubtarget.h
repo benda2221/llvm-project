@@ -86,6 +86,7 @@ public:
     VentanaVeyron,
     MIPSP8700,
     Andes45,
+    Dandelion,
   };
   enum RISCVVRGatherCostModelEnum : uint8_t {
     Quadratic,
@@ -347,7 +348,9 @@ public:
 
   bool enableMachinePipeliner() const override;
 
-  bool useDFAforSMS() const override { return false; }
+  /// Software pipeliner resource checks: use DFAPacketizer when this CPU has a
+  /// non-empty itinerary (VLIW packet DFA); otherwise ProcResource / SchedClass.
+  bool useDFAforSMS() const override;
 
   bool useAA() const override;
 

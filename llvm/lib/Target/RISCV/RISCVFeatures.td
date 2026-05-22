@@ -1778,6 +1778,9 @@ def TuneVentanaVeyron : SubtargetFeature<"ventana-veyron", "RISCVProcFamily", "V
 def TuneAndes45 : SubtargetFeature<"andes45", "RISCVProcFamily", "Andes45",
                                    "Andes 45-Series processors">;
 
+def TuneDandelion : SubtargetFeature<"dandelion-family", "RISCVProcFamily", "Dandelion",
+                                    "Dandelion VLIW processor family">;
+
 def TuneVXRMPipelineFlush : SubtargetFeature<"vxrm-pipeline-flush", "HasVXRMPipelineFlush",
                                              "true", "VXRM writes causes pipeline flush">;
 

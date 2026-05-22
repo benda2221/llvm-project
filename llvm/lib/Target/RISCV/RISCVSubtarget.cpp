@@ -205,7 +205,18 @@ bool RISCVSubtarget::useRVVForFixedLengthVectors() const {
 bool RISCVSubtarget::enableSubRegLiveness() const { return true; }
 
 bool RISCVSubtarget::enableMachinePipeliner() const {
-  return getSchedModel().hasInstrSchedModel();
+  // Machine pipeliner normally needs InstrSchedModel (SchedClass / ProcResource).
+  // Itinerary-only CPUs (e.g. Dandelion VLIW) use DFAPacketizer instead; see
+  // useDFAforSMS() and RISCVInstrInfo::CreateTargetScheduleState.
+  if (getSchedModel().hasInstrSchedModel())
+    return true;
+  const InstrItineraryData *II = getInstrItineraryData();
+  return II && !II->isEmpty();
+}
+
+bool RISCVSubtarget::useDFAforSMS() const {
+  const InstrItineraryData *II = getInstrItineraryData();
+  return II && !II->isEmpty();
 }
 
   /// Enable use of alias analysis during code generation (during MI
