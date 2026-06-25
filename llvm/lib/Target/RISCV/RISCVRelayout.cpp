@@ -12,6 +12,7 @@
 #include "RISCV.h"
 #include "RISCVInstrInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVVLIWSlotUtils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
@@ -68,21 +69,6 @@ STATISTIC(RISCVRelayoutNumUnconditionalRelaxed, "[riscv-relayout] Number of unco
 
 // Number of VLIW slots in the Dandelion processor (mirrors RISCVPackPadding).
 static constexpr unsigned DandelionSlotsRL = 8;
-
-// Return the legal slot bitmask (bit N == SLOT N) for the given SchedClass,
-// derived from the itinerary stage FuncUnits.  Returns 0xFF (any slot) when
-// itinerary data is absent.
-static uint8_t getSlotMaskRL(unsigned SchedClass,
-                              const InstrItineraryData *IID) {
-  if (!IID || IID->isEmpty())
-    return 0xFF;
-  const InstrStage *IS = IID->beginStage(SchedClass);
-  const InstrStage *End = IID->endStage(SchedClass);
-  uint8_t Mask = 0;
-  for (; IS != End; ++IS)
-    Mask |= static_cast<uint8_t>(IS->getUnits());
-  return Mask;
-}
 
 // Returns true if MI is one of the NOP forms inserted by RISCVPackPadding:
 //   SLOT0: FEQ.S x0, f0, f0
@@ -451,16 +437,13 @@ bool RISCVRelayoutImpl::isBlockInRange(const MachineInstr &MI,
   return false;
 }
 
-/// wrapInVLIWBundle - Wrap all non-debug instructions in NewBB into a single
-/// 8-slot VLIW bundle, filling empty slots with NOPs:
-///   SLOT 0 (FDivFPUPipeline): FEQ.S  x0, f0, f0
-///   SLOT 1-7 (ALU pipelines): ADDI   x0, x0, 0
+/// wrapInVLIWBundle - Wrap non-debug instructions in NewBB into legal
+/// 8-slot VLIW bundles, filling empty slots with NOPs.
 /// No-ops when itinerary data is absent (non-Dandelion target).
 void RISCVRelayoutImpl::wrapInVLIWBundle(MachineBasicBlock &NewBB) {
   if (!RII || !IID || IID->isEmpty())
     return;
 
-  // Collect the real (non-debug) instructions to be bundled.
   SmallVector<MachineInstr *, DandelionSlotsRL> Instrs;
   for (MachineInstr &MI : NewBB)
     if (!MI.isDebugInstr())
@@ -468,65 +451,50 @@ void RISCVRelayoutImpl::wrapInVLIWBundle(MachineBasicBlock &NewBB) {
   if (Instrs.empty())
     return;
 
-  // Compute legal slot masks via the itinerary stage FuncUnit bitmask.
-  SmallVector<uint8_t, DandelionSlotsRL> SlotMasks(Instrs.size());
-  for (unsigned i = 0, e = Instrs.size(); i != e; ++i)
-    SlotMasks[i] = getSlotMaskRL(Instrs[i]->getDesc().getSchedClass(), IID);
+  SmallVector<RISCVVLIW::SlotPacket, 4> Packets;
+  RISCVVLIW::partitionIntoPackets(Instrs, IID, TRI, Packets);
 
-  // Greedy left-to-right slot assignment: each instruction takes the lowest
-  // available legal slot, preserving in-order WAW safety (mirrors PackPadding).
-  uint8_t OccupiedSlots = 0;
-  SmallVector<int, DandelionSlotsRL> AssignedSlot(Instrs.size(), -1);
-  for (unsigned i = 0, e = Instrs.size(); i != e; ++i) {
-    uint8_t Legal = SlotMasks[i] & ~OccupiedSlots;
-    if (!Legal)
-      Legal = ~OccupiedSlots & 0xFF; // fallback: any free slot
-    AssignedSlot[i] = __builtin_ctz(Legal);
-    OccupiedSlots |= static_cast<uint8_t>(1u << AssignedSlot[i]);
-  }
-
-  // Build a slot-indexed array; nullptr means the slot needs a NOP.
-  std::array<MachineInstr *, DandelionSlotsRL> SlotInstr;
-  SlotInstr.fill(nullptr);
-  for (unsigned i = 0, e = Instrs.size(); i != e; ++i)
-    SlotInstr[AssignedSlot[i]] = Instrs[i];
-
-  // Detach all real instructions; remember where to re-insert them.
   MachineBasicBlock::instr_iterator InsertPt = NewBB.instr_end();
   for (MachineInstr *MI : Instrs)
     MI->removeFromParent();
 
-  // Re-insert instructions in slot order, filling gaps with NOPs.
-  MachineBasicBlock::instr_iterator FirstInserted;
-  bool FirstSet = false;
-  for (unsigned Slot = 0; Slot < DandelionSlotsRL; ++Slot) {
-    MachineInstr *MI;
-    if (SlotInstr[Slot]) {
-      MI = SlotInstr[Slot];
-      NewBB.insert(InsertPt, MI);
-    } else if (Slot == 0) {
-      // SLOT 0 is the FDivFPU pipeline; fill with the FP-class NOP.
-      MI = BuildMI(NewBB, InsertPt, DebugLoc(), RII->get(RISCV::FEQ_S))
-               .addDef(RISCV::X0)
-               .addReg(RISCV::F0_F, RegState::Undef)
-               .addReg(RISCV::F0_F, RegState::Undef);
-    } else {
-      // SLOT 1-7 are ALU-capable pipelines; fill with an integer NOP.
-      MI = BuildMI(NewBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
-               .addDef(RISCV::X0)
-               .addReg(RISCV::X0)
-               .addImm(0);
+  for (const RISCVVLIW::SlotPacket &Packet : Packets) {
+    std::array<MachineInstr *, RISCVVLIW::DandelionSlots> SlotInstr;
+    SlotInstr.fill(nullptr);
+    for (unsigned I = 0, E = Packet.Instrs.size(); I != E; ++I) {
+      assert(Packet.Slots[I] >= 0 &&
+             Packet.Slots[I] < (int)RISCVVLIW::DandelionSlots);
+      SlotInstr[Packet.Slots[I]] = Packet.Instrs[I];
     }
-    if (!FirstSet) {
-      FirstInserted = MI->getIterator();
-      FirstSet = true;
+
+    MachineBasicBlock::instr_iterator FirstInserted;
+    bool FirstSet = false;
+    for (unsigned Slot = 0; Slot < RISCVVLIW::DandelionSlots; ++Slot) {
+      MachineInstr *MI;
+      if (SlotInstr[Slot]) {
+        MI = SlotInstr[Slot];
+        NewBB.insert(InsertPt, MI);
+      } else if (Slot == 0) {
+        MI = BuildMI(NewBB, InsertPt, DebugLoc(), RII->get(RISCV::FEQ_S))
+                 .addDef(RISCV::X0)
+                 .addReg(RISCV::F0_F, RegState::Undef)
+                 .addReg(RISCV::F0_F, RegState::Undef);
+      } else {
+        MI = BuildMI(NewBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
+                 .addDef(RISCV::X0)
+                 .addReg(RISCV::X0)
+                 .addImm(0);
+      }
+      if (!FirstSet) {
+        FirstInserted = MI->getIterator();
+        FirstSet = true;
+      }
     }
+
+    assert(FirstSet && "wrapInVLIWBundle: no instructions were inserted");
+    finalizeBundle(NewBB, FirstInserted, InsertPt);
   }
 
-  assert(FirstSet && "wrapInVLIWBundle: no instructions were inserted");
-  finalizeBundle(NewBB, FirstInserted, InsertPt);
-
-  // Update the stored block size so offset calculations stay accurate.
   BlockInfo[NewBB.getNumber()].Size = computeBlockSize(NewBB);
 }
 

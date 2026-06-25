@@ -452,6 +452,11 @@ void RISCVMCCodeEmitter::encodeInstruction(const MCInst &MI,
 
   switch (Size) {
   default:
+    llvm::errs() << "Unhandled encodeInstruction length: "
+                 << Size << "\n";
+    llvm::errs() << "Opcode: " << MI.getOpcode() << "\n";
+    MI.dump();
+
     llvm_unreachable("Unhandled encodeInstruction length!");
   case 2: {
     uint16_t Bits = getBinaryCodeForInstr(MI, Fixups, STI);
