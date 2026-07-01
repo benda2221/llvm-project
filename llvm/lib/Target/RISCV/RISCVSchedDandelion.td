@@ -193,6 +193,14 @@ def DandelionIIC_FPU : InstrItinData<
 //  Single FP source → WB bypass only.
 //===----------------------------------------------------------------------===//
 
+def DandelionIIC_FPUToGPR : InstrItinData<
+  IIC_FPUToGPR,
+  [InstrStage<3, [RISCV_SLOT0]>],
+  [4, 1, 1],
+  [Dandelion_WB_Bypass,
+   Dandelion_WB_Bypass,
+   Dandelion_WB_Bypass]>;
+
 def DandelionIIC_FPToInt : InstrItinData<
   IIC_FPToInt,
   [InstrStage<3, [RISCV_SLOT1]>],
@@ -317,6 +325,7 @@ def RISCVDandelionItineraries : ProcessorItineraries<
     DandelionIIC_Load,
     DandelionIIC_Store,
     DandelionIIC_FPU,
+    DandelionIIC_FPUToGPR,
     DandelionIIC_FPToInt,
     DandelionIIC_IntToFP,
     DandelionIIC_FDiv,

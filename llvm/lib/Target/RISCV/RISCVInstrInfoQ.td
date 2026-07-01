@@ -93,47 +93,56 @@ foreach Ext = QExts in {
   }
 
   let mayRaiseFPException = 0 in 
+  let Itinerary = IIC_FPUToGPR in
   defm FCLASS_Q : FPUnaryOp_r_m<0b1110011, 0b00000, 0b001, Ext, GPR,
                                 Ext.PrimaryTy, "fclass.q">,
                   Sched<[WriteFClass128, ReadFClass128]>;
 
   let IsSignExtendingOpW = 1 in 
+  let Itinerary = IIC_FPToInt in
   defm FCVT_W_Q  : FPUnaryOp_r_frm_m<0b1100011, 0b00000, Ext, GPR,
                                      Ext.PrimaryTy, "fcvt.w.q">,
                    Sched<[WriteFCvtF128ToI32, ReadFCvtF128ToI32]>;
 
   let IsSignExtendingOpW = 1 in 
+  let Itinerary = IIC_FPToInt in
   defm FCVT_WU_Q : FPUnaryOp_r_frm_m<0b1100011, 0b00001, Ext, GPR,
                                      Ext.PrimaryTy, "fcvt.wu.q">,
                    Sched<[WriteFCvtF128ToI32, ReadFCvtF128ToI32]>;
 
   let mayRaiseFPException = 0 in 
+  let Itinerary = IIC_IntToFP in
   defm FCVT_Q_W  : FPUnaryOp_r_frmlegacy_m<0b1101011, 0b00000, Ext,
                                            Ext.PrimaryTy, GPR, "fcvt.q.w">,
                    Sched<[WriteFCvtI32ToF128, ReadFCvtI32ToF128]>;
 
   let mayRaiseFPException = 0 in 
+  let Itinerary = IIC_IntToFP in
   defm FCVT_Q_WU : FPUnaryOp_r_frmlegacy_m<0b1101011, 0b00001, Ext,
                                            Ext.PrimaryTy, GPR, "fcvt.q.wu">,
                    Sched<[WriteFCvtI32ToF128, ReadFCvtI32ToF128]>;
 } // foreach Ext = QExts
 
 foreach Ext = QExtsRV64 in {
+  let Itinerary = IIC_FPToInt in
   defm FCVT_L_Q  : FPUnaryOp_r_frm_m<0b1100011, 0b00010, Ext, GPR, 
                                      Ext.PrimaryTy, "fcvt.l.q", [IsRV64]>,
                    Sched<[WriteFCvtF128ToI64, ReadFCvtF128ToI64]>;
 
+  let Itinerary = IIC_FPToInt in
   defm FCVT_LU_Q : FPUnaryOp_r_frm_m<0b1100011, 0b00011, Ext, GPR,
                                      Ext.PrimaryTy, "fcvt.lu.q", [IsRV64]>,
                    Sched<[WriteFCvtF128ToI64, ReadFCvtF128ToI64]>;
 
   let mayRaiseFPException = 0 in 
+  let Itinerary = IIC_IntToFP in
   defm FCVT_Q_L : FPUnaryOp_r_frmlegacy_m<0b1101011, 0b00010, Ext,
                                           Ext.PrimaryTy, GPR, "fcvt.q.l",
                                           [IsRV64]>,
                   Sched<[WriteFCvtI64ToF128, ReadFCvtI64ToF128]>;
 
   let mayRaiseFPException = 0 in 
+  let Itinerary = IIC_IntToFP in
   defm FCVT_Q_LU : FPUnaryOp_r_frmlegacy_m<0b1101011, 0b00011, Ext,
                                            Ext.PrimaryTy, GPR, "fcvt.q.lu",
                                            [IsRV64]>,

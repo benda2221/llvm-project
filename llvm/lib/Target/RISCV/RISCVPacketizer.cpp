@@ -277,7 +277,7 @@ void RISCVPacketizerList::emitBundleForCurrentPacket(
 // "last possible slot" for a class is the highest-numbered slot it can use.
 //
 // Mapping (from InstrItinData entries in RISCVSchedDandelion.td):
-//   SLOT0           : IIC_FDiv, IIC_FPU
+//   SLOT0           : IIC_FDiv, IIC_FPU, IIC_FPUToGPR
 //   SLOT1           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_FPU, IIC_FPToInt, IIC_Nop
 //   SLOT2           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_FPU, IIC_IntToFP, IIC_Nop
 //   SLOT3           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_MUL, IIC_DIV, IIC_Nop

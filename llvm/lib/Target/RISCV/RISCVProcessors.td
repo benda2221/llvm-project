@@ -88,7 +88,9 @@ class RISCVTuneProcessorModel<string n,
 
 defvar GenericTuneFeatures = [TuneOptimizedNF2SegmentLoadStore];
 
-defvar DandelionTuneFeatures = !listconcat(GenericTuneFeatures, [TuneDandelion]);
+defvar DandelionTuneFeatures = !listconcat(GenericTuneFeatures,
+                                             [TuneDandelion,
+                                              TunePostRAScheduler]);
 
 def GENERIC_RV32 : RISCVProcessorModel<"generic-rv32",
                                        NoSchedModel,

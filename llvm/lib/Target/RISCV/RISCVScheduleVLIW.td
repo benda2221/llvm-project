@@ -85,6 +85,7 @@ def IIC_Jump    : InstrItinClass;
 
 // FPU (add/sub/mul/fma/cmp/fmin/fmax/fsgnj/fcvt scalar) – pipelines 0-2
 def IIC_FPU     : InstrItinClass;
+def IIC_FPUToGPR: InstrItinClass;
 // FP-to-Int type conversion (FCVT.W.S / FCVT.WU.S) – pipeline 1 only
 def IIC_FPToInt : InstrItinClass;
 // Int-to-FP type conversion (FCVT.S.W / FCVT.S.WU) – pipeline 2 only

@@ -130,6 +130,7 @@ foreach Ext = DExts in {
   }
 
   let mayRaiseFPException = 0 in
+  let Itinerary = IIC_FPUToGPR in
   defm FCLASS_D : FPUnaryOp_r_m<0b1110001, 0b00000, 0b001, Ext, GPR, Ext.PrimaryTy,
                                 "fclass.d">,
                   Sched<[WriteFClass64, ReadFClass64]>;
@@ -182,10 +183,12 @@ foreach Ext = DExtsRV64 in {
 } // foreach Ext = DExts64
 
 let Predicates = [HasStdExtD, IsRV64], mayRaiseFPException = 0 in
+let Itinerary = IIC_FPUToGPR in
 def FMV_X_D : FPUnaryOp_r<0b1110001, 0b00000, 0b000, GPR, FPR64, "fmv.x.d">,
               Sched<[WriteFMovF64ToI64, ReadFMovF64ToI64]>;
 
 let Predicates = [HasStdExtD, IsRV64], mayRaiseFPException = 0 in
+let Itinerary = IIC_IntToFP in
 def FMV_D_X : FPUnaryOp_r<0b1111001, 0b00000, 0b000, FPR64, GPR, "fmv.d.x">,
               Sched<[WriteFMovI64ToF64, ReadFMovI64ToF64]>;
 
