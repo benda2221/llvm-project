@@ -136,6 +136,8 @@ bool RISCVPacketizerList::ignorePseudoInstruction(const MachineInstr &MI,
     const MachineBasicBlock *MBB) {
     if (MI.isDebugInstr())
         return true;
+    if (MI.isImplicitDef())
+        return true;
 
     return false;
 }
@@ -203,6 +205,13 @@ void RISCVPacketizerList::PacketizeMIs(MachineBasicBlock *MBB,
         auto Next = std::next(BeginItr);
         endPacket(MBB, Next);
       }
+      continue;
+    }
+
+    if (MI.isImplicitDef()) {
+      LLVM_DEBUG(dbgs() << "RISCVPacketizer: implicit-def not entering bundle: "
+                        << MI << '\n');
+      endPacket(MBB, MI);
       continue;
     }
 

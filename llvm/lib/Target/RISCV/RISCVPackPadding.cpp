@@ -94,6 +94,7 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
   SmallVector<MachineInstr *, 8> BundleMembers;
   SmallVector<MachineInstr *, 8> Instrs;
   SmallVector<MachineInstr *, 4> DebugInstrs;
+  SmallVector<MachineInstr *, 4> ImplicitDefs;
   for (MachineBasicBlock::instr_iterator It = std::next(Bundle.getIterator()),
                                          E = MBB.instr_end();
        It != E && It->isInsideBundle(); ++It) {
@@ -101,15 +102,18 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
     BundleMembers.push_back(MI);
     if (MI->isDebugInstr())
       DebugInstrs.push_back(MI);
+    else if (MI->isImplicitDef())
+      ImplicitDefs.push_back(MI);
     else
       Instrs.push_back(MI);
   }
 
-  if (Instrs.empty())
+  if (BundleMembers.empty())
     return false;
 
   SmallVector<RISCVVLIW::SlotPacket, 4> Packets;
-  RISCVVLIW::partitionIntoPackets(Instrs, IID, TRI, Packets);
+  if (!Instrs.empty())
+    RISCVVLIW::partitionIntoPackets(Instrs, IID, TRI, Packets);
 
   // -------------------------------------------------------------------------
   // Step 5: Unbundle.
@@ -150,6 +154,11 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
   // to an instruction that is neither the header nor any member.
   for (MachineInstr *MI : BundleMembers)
     MI->removeFromParent();
+
+  // IMPLICIT_DEF is a non-issuing pseudo. Keep it in MIR for liveness/undef
+  // semantics, but do not assign it a hardware VLIW slot.
+  for (MachineInstr *IDI : ImplicitDefs)
+    MBB.insert(InsertPt, IDI);
 
   // -------------------------------------------------------------------------
   // Step 6: Re-insert instructions in legal slot order; fill gaps with NOPs.
