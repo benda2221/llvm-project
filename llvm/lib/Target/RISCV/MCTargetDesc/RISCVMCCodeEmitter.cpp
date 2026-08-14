@@ -125,6 +125,7 @@ static void addFixup(SmallVectorImpl<MCFixup> &Fixups, uint32_t Offset,
   bool PCRel = false;
   switch (Kind) {
   case ELF::R_RISCV_CALL_PLT:
+  case ELF::R_RISCV_DANDELION_CALL:
   case RISCV::fixup_riscv_pcrel_hi20:
   case RISCV::fixup_riscv_pcrel_lo12_i:
   case RISCV::fixup_riscv_pcrel_lo12_s:
@@ -175,6 +176,19 @@ void RISCVMCCodeEmitter::expandFunctionCall(const MCInst &MI,
   assert(Func.isExpr() && "Expected expression");
 
   const MCExpr *CallExpr = Func.getExpr();
+  const bool IsDandelionCall =
+      STI.hasFeature(RISCV::TuneDandelion) &&
+      MI.getOpcode() != RISCV::PseudoJump;
+
+  // Mark Dandelion's 36-byte call template explicitly.  A private relocation
+  // is preferable to having the linker infer VLIW semantics from an ordinary
+  // AUIPC/JALR byte pattern, which is also emitted by standard RISC-V code.
+  if (IsDandelionCall) {
+    if (const auto *SpecExpr = dyn_cast<MCSpecifierExpr>(CallExpr))
+      CallExpr = SpecExpr->getSubExpr();
+    CallExpr = MCSpecifierExpr::create(CallExpr,
+                                      ELF::R_RISCV_DANDELION_CALL, Ctx);
+  }
 
   // Emit AUIPC Ra, Func with R_RISCV_CALL relocation type.
   TmpInst = MCInstBuilder(RISCV::AUIPC).addReg(Ra).addExpr(CallExpr);
@@ -190,6 +204,16 @@ void RISCVMCCodeEmitter::expandFunctionCall(const MCInst &MI,
     TmpInst = MCInstBuilder(RISCV::JALR).addReg(Ra).addReg(Ra).addImm(0);
   Binary = getBinaryCodeForInstr(TmpInst, Fixups, STI);
   support::endian::write(CB, Binary, llvm::endianness::little);
+
+  if (IsDandelionCall) {
+    // The JALR above is the temporary slot-0 instruction of a new packet.
+    // Slots 1..7 are reserved here.  For a far call LLD replaces slot 0 with
+    // the floating-point slot NOP and moves JALR to slot 7.  For a near call
+    // LLD removes all 32 bytes after rewriting AUIPC to JAL.
+    for (unsigned Slot = 1; Slot != 8; ++Slot)
+      support::endian::write(CB, uint32_t(0x00000013),
+                             llvm::endianness::little); // addi x0, x0, 0
+  }
 }
 
 void RISCVMCCodeEmitter::expandTLSDESCCall(const MCInst &MI,
@@ -651,6 +675,9 @@ uint64_t RISCVMCCodeEmitter::getImmOpValue(const MCInst &MI, unsigned OpNo,
       break;
     case ELF::R_RISCV_CALL_PLT:
       FixupKind = RISCV::fixup_riscv_call_plt;
+      RelaxCandidate = true;
+      break;
+    case ELF::R_RISCV_DANDELION_CALL:
       RelaxCandidate = true;
       break;
     case RISCV::S_QC_ABS20:

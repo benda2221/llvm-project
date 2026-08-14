@@ -20,8 +20,6 @@
 
 namespace llvm {
 
-class RISCVInstrInfo;
-struct RISCVRegisterInfo;
 class MachineFunction;
 class MachineInstr;
 class MachineLoopInfo;
@@ -35,9 +33,6 @@ class RISCVPacketizerList : public VLIWPacketizerList {
     bool Dependence;
 
 private:
-    const RISCVInstrInfo *RII;
-    const RISCVRegisterInfo *RRI;
-
     /// Return true for instructions that should not be wrapped into BUNDLE.
     /// These instructions still terminate the current packet boundary.
     bool shouldNotEnterBundle(const MachineInstr &MI) const;
@@ -64,7 +59,7 @@ public:
 
     // isSoloInstruction - true if MI must form a packet by itself (a "solo
     // packet"). Whether it emits BUNDLE is controlled separately.
-    // Current default policy for RISCV is false.
+    // Dandelion fences use this to occupy a dedicated packet.
     bool isSoloInstruction(const MachineInstr &MI) override;
 
     /// RISCV-specific packetization loop so solo instructions can either:

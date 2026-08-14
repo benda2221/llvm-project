@@ -723,6 +723,11 @@ enum {
 #undef ELF_RISCV_NONSTANDARD_RELOC
 };
 
+// Dandelion VLIW call template: AUIPC followed by a 32-byte placeholder
+// packet. Use a named alias in the psABI-reserved custom relocation range so
+// the generic R_RISCV_CUSTOM255 spelling remains available to ELF tools.
+inline constexpr unsigned R_RISCV_DANDELION_CALL = R_RISCV_CUSTOM255;
+
 enum {
   // Symbol may follow different calling convention than the standard calling
   // convention.

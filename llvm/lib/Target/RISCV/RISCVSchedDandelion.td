@@ -142,6 +142,11 @@ def DandelionIIC_Jump : InstrItinData<
   [Dandelion_EX2_Bypass,
    Dandelion_EX2_Bypass, Dandelion_EX3_Bypass]>;  // rs1: EX2 or EX3
 
+// FENCE/FENCE.I/FENCE.TSO are serialized as solo packets and occupy slot 7.
+def DandelionIIC_Fence : InstrItinData<
+  IIC_Fence,
+  [InstrStage<1, [RISCV_SLOT7]>]>;
+
 //===----------------------------------------------------------------------===//
 // Integer Multiply  (pipelines 3-4, EX1-EX3, result at WB)
 //
@@ -320,6 +325,7 @@ def RISCVDandelionItineraries : ProcessorItineraries<
     DandelionIIC_Shift,
     DandelionIIC_Branch,
     DandelionIIC_Jump,
+    DandelionIIC_Fence,
     DandelionIIC_MUL,
     DandelionIIC_DIV,
     DandelionIIC_Load,

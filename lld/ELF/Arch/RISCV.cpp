@@ -294,6 +294,7 @@ RelExpr RISCV::getRelExpr(const RelType type, const Symbol &s,
     return R_PC;
   case R_RISCV_CALL:
   case R_RISCV_CALL_PLT:
+  case R_RISCV_DANDELION_CALL:
   case R_RISCV_PLT32:
     return R_PLT_PC;
   case R_RISCV_GOT_HI20:
@@ -413,6 +414,26 @@ void RISCV::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     if (isInt<20>(hi)) {
       relocateNoSym(loc, R_RISCV_PCREL_HI20, val);
       relocateNoSym(loc + 4, R_RISCV_PCREL_LO12_I, val);
+    }
+    return;
+  }
+
+  // Dandelion far-call template on input:
+  //   +0  auipc rd, target       (slot 7 of the original packet)
+  //   +4  jalr  rd/x0, rd, 0     (temporary slot 0)
+  //   +8..+32 seven integer NOPs
+  // Keep AUIPC in place, turn slot 0 into the floating-point slot NOP, and
+  // move the relocated JALR to slot 7.  The PC-relative low part is still
+  // paired with the AUIPC address, so the same `val` is encoded at loc+32.
+  case R_RISCV_DANDELION_CALL: {
+    int64_t hi = SignExtend64(val + 0x800, bits) >> 12;
+    checkInt(ctx, loc, hi, 20, rel);
+    if (isInt<20>(hi)) {
+      uint32_t jalr = read32le(loc + 4);
+      write32le(loc + 4, 0xa0002053); // feq.s x0, f0, f0 (slot-0 NOP)
+      write32le(loc + 32, jalr);
+      relocateNoSym(loc, R_RISCV_PCREL_HI20, val);
+      relocateNoSym(loc + 32, R_RISCV_PCREL_LO12_I, val);
     }
     return;
   }
@@ -760,6 +781,27 @@ static void relaxCall(Ctx &ctx, const InputSection &sec, size_t i, uint64_t loc,
   }
 }
 
+// Relax a Dandelion AUIPC + 32-byte placeholder packet to one JAL in the
+// original AUIPC slot.  Removing exactly 32 bytes preserves packet alignment.
+static void relaxDandelionCall(Ctx &ctx, const InputSection &sec, size_t i,
+                               uint64_t loc, Relocation &r,
+                               uint32_t &remove) {
+  const Symbol &sym = *r.sym;
+  const uint32_t jalr = read32le(sec.content().data() + r.offset + 4);
+  const uint32_t rd = extractBits(jalr, 11, 7);
+  const uint64_t dest =
+      (r.expr == R_PLT_PC ? sym.getPltVA(ctx) : sym.getVA(ctx)) + r.addend;
+  const int64_t displace = dest - loc;
+
+  if (remove >= 32 && isInt<21>(displace)) {
+    sec.relaxAux->relocTypes[i] = R_RISCV_JAL;
+    sec.relaxAux->writes.push_back(0x6f | rd << 7);
+    remove = 32;
+  } else {
+    remove = 0;
+  }
+}
+
 // Relax local-exec TLS when hi20 is zero.
 static void relaxTlsLe(Ctx &ctx, const InputSection &sec, size_t i,
                        uint64_t loc, Relocation &r, uint32_t &remove) {
@@ -872,6 +914,12 @@ static bool relax(Ctx &ctx, int pass, InputSection &sec) {
       if (relaxable(relocs, i)) {
         remove = pass < 4 ? 6 : cur - delta;
         relaxCall(ctx, sec, i, loc, r, remove);
+      }
+      break;
+    case R_RISCV_DANDELION_CALL:
+      if (relaxable(relocs, i)) {
+        remove = pass < 4 ? 32 : cur - delta;
+        relaxDandelionCall(ctx, sec, i, loc, r, remove);
       }
       break;
     case R_RISCV_TPREL_HI20:

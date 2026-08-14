@@ -82,6 +82,8 @@ def IIC_Store   : InstrItinClass;
 // Conditional branch + JAL/JALR – pipeline 7
 def IIC_Branch  : InstrItinClass;
 def IIC_Jump    : InstrItinClass;
+// Memory-ordering fences are solo instructions in slot 7.
+def IIC_Fence   : InstrItinClass;
 
 // FPU (add/sub/mul/fma/cmp/fmin/fmax/fsgnj/fcvt scalar) – pipelines 0-2
 def IIC_FPU     : InstrItinClass;

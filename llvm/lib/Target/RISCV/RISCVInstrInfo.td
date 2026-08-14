@@ -837,7 +837,7 @@ def AND  : ALU_rr<0b0000000, 0b111, "and", Commutable=1>,
            Sched<[WriteIALU, ReadIALU, ReadIALU]>;
 
 let hasSideEffects = 1, mayLoad = 0, mayStore = 0 in {
-let Itinerary = IIC_Nop in
+let Itinerary = IIC_Fence in
 def FENCE : RVInstI<0b000, OPC_MISC_MEM, (outs),
                     (ins fencearg:$pred, fencearg:$succ),
                     "fence", "$pred, $succ">, Sched<[]> {
@@ -849,14 +849,14 @@ def FENCE : RVInstI<0b000, OPC_MISC_MEM, (outs),
   let imm12 = {0b0000,pred,succ};
 }
 
-let Itinerary = IIC_Nop in
+let Itinerary = IIC_Fence in
 def FENCE_TSO : RVInstI<0b000, OPC_MISC_MEM, (outs), (ins), "fence.tso", "">, Sched<[]> {
   let rs1 = 0;
   let rd = 0;
   let imm12 = {0b1000,0b0011,0b0011};
 }
 
-let Itinerary = IIC_Nop in
+let Itinerary = IIC_Fence in
 def FENCE_I : RVInstI<0b001, OPC_MISC_MEM, (outs), (ins), "fence.i", "">, Sched<[]> {
   let rs1 = 0;
   let rd = 0;

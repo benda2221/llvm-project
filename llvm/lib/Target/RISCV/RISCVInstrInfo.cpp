@@ -1822,6 +1822,16 @@ unsigned RISCVInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
 
   unsigned Opcode = MI.getOpcode();
 
+  // A Dandelion direct call occupies the normal AUIPC slot plus a complete
+  // 32-byte placeholder packet.  MC initially emits JALR in slot 0 of that
+  // packet; LLD either removes the packet when relaxing to JAL or moves JALR
+  // to slot 7 for the far-call form.  Keep the generic RISC-V descriptor size
+  // (8 bytes) unchanged because this layout is Dandelion-specific.
+  if (STI.getProcFamily() == RISCVSubtarget::Dandelion &&
+      (Opcode == RISCV::PseudoCALL || Opcode == RISCV::PseudoCALLReg ||
+       Opcode == RISCV::PseudoTAIL))
+    return 36;
+
   if (Opcode == TargetOpcode::INLINEASM ||
       Opcode == TargetOpcode::INLINEASM_BR) {
     const MachineFunction &MF = *MI.getParent()->getParent();

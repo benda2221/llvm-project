@@ -46,6 +46,7 @@ RISCV::Specifier RISCV::parseSpecifierName(StringRef name) {
       // Used in data directives
       .Case("pltpcrel", ELF::R_RISCV_PLT32)
       .Case("gotpcrel", ELF::R_RISCV_GOT32_PCREL)
+      .Case("dandelion_call", ELF::R_RISCV_DANDELION_CALL)
       .Default(0);
 }
 
@@ -83,6 +84,8 @@ StringRef RISCV::getSpecifierName(Specifier S) {
     return "tls_gd_pcrel_hi";
   case ELF::R_RISCV_CALL_PLT:
     return "call_plt";
+  case ELF::R_RISCV_DANDELION_CALL:
+    return "dandelion_call";
   case ELF::R_RISCV_32_PCREL:
     return "32_pcrel";
   case ELF::R_RISCV_GOT32_PCREL:

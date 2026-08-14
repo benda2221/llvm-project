@@ -12,8 +12,6 @@
 
 #include "RISCV.h"
 #include "RISCVPacketizer.h"
-#include "RISCVInstrInfo.h"
-#include "RISCVRegisterInfo.h"
 #include "RISCVSubtarget.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/DFAPacketizer.h"
@@ -53,9 +51,6 @@ namespace {
 
     bool runOnMachineFunction(MachineFunction &Fn) override;
 
-    private:
-        const RISCVInstrInfo *RII = nullptr;
-        const RISCVRegisterInfo *RRI = nullptr;
     };
 
 } // end anonymous namespace
@@ -69,17 +64,15 @@ INITIALIZE_PASS_END(RISCVPacketizer, "riscv-packetizer", "RISCV Packetizer", fal
 
 RISCVPacketizerList::RISCVPacketizerList(MachineFunction &MF, 
     MachineLoopInfo &MLI, AAResults *AA) 
-    : VLIWPacketizerList(MF, MLI, nullptr){
-    RII = MF.getSubtarget<RISCVSubtarget>().getInstrInfo();
-    RRI = MF.getSubtarget<RISCVSubtarget>().getRegisterInfo();     
-}
+    : VLIWPacketizerList(MF, MLI, nullptr) {}
 
 bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
     LLVM_DEBUG(dbgs() << "RISCV Packetizer: runOnMachineFunction " << MF.getName() << "\n");
 
     const RISCVSubtarget &ST = MF.getSubtarget<RISCVSubtarget>();
-    const RISCVInstrInfo *RII = ST.getInstrInfo();
-    const RISCVRegisterInfo *RRI = ST.getRegisterInfo();
+    const InstrItineraryData *IID = ST.getInstrItineraryData();
+    if (!IID || IID->isEmpty())
+        return false;
 
     MachineLoopInfo &MLI = getAnalysis<MachineLoopInfoWrapperPass>().getLI();
 
@@ -143,15 +136,22 @@ bool RISCVPacketizerList::ignorePseudoInstruction(const MachineInstr &MI,
 }
 
 bool RISCVPacketizerList::shouldNotEnterBundle(const MachineInstr &MI) const {
-    // Position directives are packet boundaries but should not be wrapped in
-    // BUNDLE.
-    return MI.isPosition();
+    // Position directives and inline assembly are packet boundaries but should
+    // not be wrapped in BUNDLE. Inline assembly is emitted immediately after
+    // the preceding packet; authors are responsible for supplying a complete,
+    // legal VLIW packet when the assembly string contains instructions.
+    return MI.isPosition() || MI.isInlineAsm();
 }
 
 bool RISCVPacketizerList::isSoloInstruction(const MachineInstr &MI) {
-    // Current RISCV policy: no instruction is treated as "solo packet" by
-    // default. Add real solo instruction kinds here if needed.
-    return false;
+    switch (MI.getOpcode()) {
+    case RISCV::FENCE:
+    case RISCV::FENCE_I:
+    case RISCV::FENCE_TSO:
+        return true;
+    default:
+        return false;
+    }
 }
 
 bool RISCVPacketizerList::shouldEmitBundleForSoloInstruction(
@@ -293,7 +293,8 @@ void RISCVPacketizerList::emitBundleForCurrentPacket(
 //   SLOT4           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_MUL, IIC_DIV, IIC_Nop
 //   SLOT5           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_Load, IIC_Store, IIC_Atomic, IIC_Nop
 //   SLOT6           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_Load, IIC_Store, IIC_Atomic, IIC_Nop
-//   SLOT7           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_Branch, IIC_Jump, IIC_CSR, IIC_Nop
+//   SLOT7           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_Branch, IIC_Jump,
+//                     IIC_Fence, IIC_CSR, IIC_Nop
 //
 // Returns the set of slots (as a bitmask, bit N = SLOT N) that an instruction
 // of the given itinerary class may occupy.
