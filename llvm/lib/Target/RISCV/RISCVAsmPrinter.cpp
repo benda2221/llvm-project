@@ -20,6 +20,7 @@
 #include "RISCVConstantPoolValue.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVRegisterInfo.h"
+#include "RISCVVLIWSlotUtils.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Statistic.h"
@@ -39,6 +40,7 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/RISCVISAInfo.h"
 #include "llvm/Transforms/Instrumentation/HWAddressSanitizer.h"
@@ -305,29 +307,45 @@ void RISCVAsmPrinter::emitNTLHint(const MachineInstr *MI) {
 }
 
 void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
-  RISCV_MC::verifyInstructionPredicates(MI->getOpcode(), STI->getFeatureBits());
+  // Dandelion packets remain bundled through verification. The BUNDLE header
+  // has no encoding; emit its eight physical-slot members in slot order.
+  if (MI->isBundle()) {
+    const bool IsDandelion =
+        STI->getProcFamily() == RISCVSubtarget::Dandelion;
+    const MachineBasicBlock *MBB = MI->getParent();
+    unsigned NumSlots = 0;
+    for (auto MII = std::next(MI->getIterator());
+         MII != MBB->instr_end() && MII->isInsideBundle(); ++MII) {
+      if (MII->isDebugInstr() || MII->isMetaInstruction())
+        continue;
 
-  // Handle BUNDLE instructions by emitting each bundled instruction in order.
-  // if (MI->isBundle()) {
-  //   const MachineBasicBlock *MBB = MI->getParent();
-  //   for (auto MII = std::next(MI->getIterator());
-  //        MII != MBB->instr_end() && MII->isInsideBundle(); ++MII) {
-  //     if (MII->isDebugInstr())
-  //       continue;
-  //     // Skip pseudo instructions with no assembly representation (e.g.
-  //     // IMPLICIT_DEF) that the InstPrinter cannot handle (Bits == 0).
-  //     if (MII->isImplicitDef() || MII->isCopy() || MII->isKill())
-  //       continue;
-  //     // Inline asm must be handled via emitInlineAsmInstruction, not lowerToMCInst.
-  //     if (MII->getOpcode() == TargetOpcode::INLINEASM ||
-  //         MII->getOpcode() == TargetOpcode::INLINEASM_BR) {
-  //       emitInlineAsmInstruction(&*MII);
-  //       continue;
-  //     }
-  //     emitInstruction(&*MII);
-  //   }
-  //   return;
-  // }
+      if (IsDandelion) {
+        if (MII->isImplicitDef() || MII->isCopy() || MII->isKill() ||
+            MII->isInlineAsm())
+          report_fatal_error(
+              "non-issuing instruction found in a Dandelion bundle");
+        if (NumSlots == RISCVVLIW::DandelionSlots)
+          report_fatal_error("Dandelion bundle has more than eight slots");
+        if (STI->getInstrInfo()->getInstSizeInBytes(*MII) != 4)
+          report_fatal_error("Dandelion bundle member is not four bytes");
+      } else {
+        // Generic bundles should normally be removed by
+        // UnpackMachineBundles. Keep direct MIR-to-AsmPrinter use working for
+        // tests and debugging without imposing Dandelion slot constraints.
+        if (MII->isImplicitDef() || MII->isCopy() || MII->isKill())
+          continue;
+      }
+
+      emitInstruction(&*MII);
+      ++NumSlots;
+    }
+
+    if (IsDandelion && NumSlots != RISCVVLIW::DandelionSlots)
+      report_fatal_error("Dandelion bundle does not contain eight slots");
+    return;
+  }
+
+  RISCV_MC::verifyInstructionPredicates(MI->getOpcode(), STI->getFeatureBits());
 
   emitNTLHint(MI);
 

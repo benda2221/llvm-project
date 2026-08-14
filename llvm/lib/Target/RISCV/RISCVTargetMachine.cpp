@@ -625,8 +625,13 @@ void RISCVPassConfig::addPreEmitPass2() {
   if (!DisableRISCVRelayout)
     addPass(createRISCVRelayoutPass());
 
-  // Unpack machine bundles to emit each bundled instruction in order.
-  addPass(createUnpackMachineBundles(nullptr));
+  // Dandelion packets retain their BUNDLE header through verification and are
+  // emitted member-by-member by RISCVAsmPrinter. Preserve the historical
+  // unpacking behavior for non-Dandelion subtargets.
+  addPass(createUnpackMachineBundles([](const MachineFunction &MF) {
+    return MF.getSubtarget<RISCVSubtarget>().getProcFamily() !=
+           RISCVSubtarget::Dandelion;
+  }));
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {

@@ -1,0 +1,68 @@
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer,riscv-pack-padding -verify-machineinstrs \
+# RUN:   -o - %s | FileCheck %s
+
+# A true RAW cannot use an intra-packet result because Dandelion reads all
+# operands from packet-entry state. The producer and consumer must be split.
+# CHECK-LABEL: name: raw_split
+# CHECK: BUNDLE
+# CHECK-NEXT: $x0 = FEQ_S
+# CHECK-NEXT: renamable $x13 = ADDI
+# CHECK: BUNDLE
+# CHECK-NEXT: $x0 = FEQ_S
+# CHECK-NEXT: renamable $x14 = ADD renamable $x13
+--- |
+  define void @raw_split() { ret void }
+  define void @waw_priority() { ret void }
+  define void @waw_reverse_split() { ret void }
+...
+---
+name: raw_split
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    renamable $x13 = ADDI renamable $x10, 1
+    renamable $x14 = ADD renamable $x13, renamable $x11
+    PseudoRET
+...
+---
+name: waw_priority
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10
+    dead renamable $x13 = FEQ_S undef $f0_f, undef $f0_f
+    renamable $x13 = ADDI renamable $x10, 1
+    SB killed renamable $x13, killed renamable $x10, 0
+    PseudoRET
+...
+
+# A WAW is legal when the later write has a higher legal slot. FEQ_S is fixed
+# at slot 0 and ADDI is assigned a later slot. The highest-slot definition is
+# the live packet output.
+# CHECK-LABEL: name: waw_priority
+# CHECK: BUNDLE implicit-def $x13,
+# CHECK-NEXT: dead renamable $x13 = FEQ_S
+# CHECK-NEXT: renamable $x13 = ADDI
+
+# A later write that is restricted to a lower slot cannot share a packet with
+# the earlier write, because the RTL write-port priority would select the
+# wrong architectural result.
+# CHECK-LABEL: name: waw_reverse_split
+# CHECK: BUNDLE
+# CHECK-NEXT: $x0 = FEQ_S
+# CHECK-NEXT: renamable $x13 = ADDI
+# CHECK: BUNDLE
+# CHECK-NEXT: renamable $x13 = FEQ_S
+---
+name: waw_reverse_split
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10
+    dead renamable $x13 = ADDI renamable $x10, 1
+    renamable $x13 = FEQ_S undef $f0_f, undef $f0_f
+    SB killed renamable $x13, killed renamable $x10, 0
+    PseudoRET
+...

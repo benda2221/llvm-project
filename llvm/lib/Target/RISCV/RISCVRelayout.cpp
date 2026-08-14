@@ -12,6 +12,7 @@
 #include "RISCV.h"
 #include "RISCVInstrInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVVLIWBundleUtils.h"
 #include "RISCVVLIWSlotUtils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -492,7 +493,7 @@ void RISCVRelayoutImpl::wrapInVLIWBundle(MachineBasicBlock &NewBB) {
     }
 
     assert(FirstSet && "wrapInVLIWBundle: no instructions were inserted");
-    finalizeBundle(NewBB, FirstInserted, InsertPt);
+    RISCVVLIW::finalizeRISCVBundle(NewBB, FirstInserted, InsertPt);
   }
 
   BlockInfo[NewBB.getNumber()].Size = computeBlockSize(NewBB);
@@ -549,7 +550,7 @@ void RISCVRelayoutImpl::wrapStandaloneBranchesInMBB(MachineBasicBlock &MBB) {
     // SLOT7: branch
     MBB.insert(InsertPt, BrMI);
 
-    finalizeBundle(MBB, FirstInstr, InsertPt);
+    RISCVVLIW::finalizeRISCVBundle(MBB, FirstInstr, InsertPt);
   }
 
   // Recompute block size (each 4-byte branch is now inside a 32-byte bundle).
@@ -1118,6 +1119,12 @@ bool RISCVRelayoutImpl::run(MachineFunction &mf) {
   const RISCVSubtarget &RST = MF->getSubtarget<RISCVSubtarget>();
   RII = RST.getInstrInfo();
   IID = RST.getInstrItineraryData();
+  // This is the bundle-aware branch-range pass. The generic RISC-V branch
+  // relaxation pass has already run, and touching block numbering here would
+  // perturb non-Dandelion output even when no VLIW work is possible.
+  if (!IID || IID->isEmpty())
+    return false;
+
   if (TRI->trackLivenessAfterRegAlloc(*MF))
     RS.reset(new RegScavenger());
 

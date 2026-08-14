@@ -29,6 +29,7 @@
 #include "RISCV.h"
 #include "RISCVInstrInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVVLIWBundleUtils.h"
 #include "RISCVVLIWSlotUtils.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -202,7 +203,7 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
     }
 
     assert(FirstSet && "No instructions inserted");
-    finalizeBundle(MBB, FirstInserted, InsertPt);
+    RISCVVLIW::finalizeRISCVBundle(MBB, FirstInserted, InsertPt);
   }
 
   // Re-insert debug instructions after the rebuilt bundle. They should not

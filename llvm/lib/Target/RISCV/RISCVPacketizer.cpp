@@ -13,6 +13,7 @@
 #include "RISCV.h"
 #include "RISCVPacketizer.h"
 #include "RISCVSubtarget.h"
+#include "RISCVVLIWBundleUtils.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/DFAPacketizer.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -96,6 +97,8 @@ bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
             MB.erase(&MI);
     }
 
+    bool Changed = false;
+
     // Loop over all of the basic blocks.
     for (MachineBasicBlock &MB : MF) {
         auto End = MB.end();
@@ -112,11 +115,13 @@ bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
         // padded to the full issue-width by RISCVPackPadding.
         while (RE != End && RE->isTerminator())
             ++RE;
-        if (RB != RE)
+        if (RB != RE) {
             Packetizer.PacketizeMIs(&MB, RB, RE);
+            Changed = true;
+        }
     }
 
-    return false;
+    return Changed;
 
 }
 
@@ -274,7 +279,8 @@ void RISCVPacketizerList::emitBundleForCurrentPacket(
         }
     });
     MachineInstr &MIFirst = *CurrentPacketMIs.front();
-    finalizeBundle(*MBB, MIFirst.getIterator(), MI.getInstrIterator());
+    RISCVVLIW::finalizeRISCVBundle(*MBB, MIFirst.getIterator(),
+                                   MI.getInstrIterator());
     CurrentPacketMIs.clear();
     ResourceTracker->clearResources();
     LLVM_DEBUG(dbgs() << "End packet\n");
@@ -425,8 +431,13 @@ bool RISCVPacketizerList::shouldAddToPacket(const MachineInstr &MI) {
 
 void RISCVPacketizerList::endPacket(MachineBasicBlock *MBB,
                                     MachineBasicBlock::iterator MI) {
+  if (CurrentPacketMIs.empty()) {
+    ResourceTracker->clearResources();
+    return;
+  }
+
   if (CurrentPacketMIs.size() != 1) {
-    VLIWPacketizerList::endPacket(MBB, MI);
+    emitBundleForCurrentPacket(MBB, MI);
     return;
   }
 
