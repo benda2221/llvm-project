@@ -52,3 +52,23 @@ entry:
 ; ASM-NEXT: nop
 ; ASM-NEXT: nop
 ; ASM-NEXT: fence rw, rw
+
+; Calls and returns are issuing pseudos at this stage. The Dandelion MC layer
+; expands a direct call into its AUIPC plus placeholder-packet template, while
+; PseudoRET lowers to JALR. They still occupy one logical slot in their owning
+; MIR bundle and must be accepted by bundle-aware emission.
+declare void @callee(i32)
+
+define void @call_and_return(i32 %value) {
+entry:
+  call void @callee(i32 %value)
+  ret void
+}
+
+; MIR-LABEL: name: call_and_return
+; MIR: PseudoCALL
+; MIR: PseudoRET
+
+; ASM-LABEL: call_and_return:
+; ASM: call callee
+; ASM: ret

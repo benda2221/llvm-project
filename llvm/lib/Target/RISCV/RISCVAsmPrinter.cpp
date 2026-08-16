@@ -326,8 +326,6 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
               "non-issuing instruction found in a Dandelion bundle");
         if (NumSlots == RISCVVLIW::DandelionSlots)
           report_fatal_error("Dandelion bundle has more than eight slots");
-        if (STI->getInstrInfo()->getInstSizeInBytes(*MII) != 4)
-          report_fatal_error("Dandelion bundle member is not four bytes");
       } else {
         // Generic bundles should normally be removed by
         // UnpackMachineBundles. Keep direct MIR-to-AsmPrinter use working for
