@@ -1,4 +1,4 @@
-//===----- RISCVPacketizer.cpp - RISCV packetizer ---------------------------===//
+//===----- RISCVPacketizer.cpp - RISCV packetizer ------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -10,21 +10,23 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "RISCV.h"
 #include "RISCVPacketizer.h"
+#include "RISCV.h"
 #include "RISCVSubtarget.h"
 #include "RISCVVLIWBundleUtils.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/DFAPacketizer.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
-#include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/MachineDominators.h"
+#include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/CodeGen/ScheduleDAG.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include <cassert>
 
@@ -32,97 +34,112 @@ using namespace llvm;
 
 #define DEBUG_TYPE "packets"
 
+static cl::opt<bool> DisableShallowDependency(
+    "riscv-disable-shallow-dependency", cl::Hidden,
+    cl::desc("Disable Dandelion intra-packet shallow RAW dependencies"),
+    cl::init(false));
+
+STATISTIC(NumShallowDataEdges,
+          "[riscv-packetizer] Accepted shallow Data edges");
+STATISTIC(NumShallowEndpointPairs,
+          "[riscv-packetizer] Accepted shallow dependency endpoint pairs");
+STATISTIC(NumRejectedSecondDataPair,
+          "[riscv-packetizer] Candidates rejected by a second Data pair");
+STATISTIC(NumSlotConstraintSplits, "[riscv-packetizer] Packets split because "
+                                   "slot constraints had no solution");
+
 namespace {
 
-    class RISCVPacketizer : public MachineFunctionPass {
-    public:
-    static char ID;
-    RISCVPacketizer() : MachineFunctionPass(ID) {}
+class RISCVPacketizer : public MachineFunctionPass {
+public:
+  static char ID;
+  RISCVPacketizer() : MachineFunctionPass(ID) {}
 
-    void getAnalysisUsage(AnalysisUsage &AU) const override {
-        AU.setPreservesCFG();
-        AU.addRequired<MachineDominatorTreeWrapperPass>();
-        AU.addRequired<MachineLoopInfoWrapperPass>();
-        AU.addPreserved<MachineDominatorTreeWrapperPass>();
-        AU.addPreserved<MachineLoopInfoWrapperPass>();
-        MachineFunctionPass::getAnalysisUsage(AU);
-    }
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.setPreservesCFG();
+    AU.addRequired<MachineDominatorTreeWrapperPass>();
+    AU.addRequired<MachineLoopInfoWrapperPass>();
+    AU.addPreserved<MachineDominatorTreeWrapperPass>();
+    AU.addPreserved<MachineLoopInfoWrapperPass>();
+    MachineFunctionPass::getAnalysisUsage(AU);
+  }
 
-    StringRef getPassName() const override { return "RISCV Packetizer"; }
+  StringRef getPassName() const override { return "RISCV Packetizer"; }
 
-    bool runOnMachineFunction(MachineFunction &Fn) override;
-
-    };
+  bool runOnMachineFunction(MachineFunction &Fn) override;
+};
 
 } // end anonymous namespace
 
 char RISCVPacketizer::ID = 0;
 
-INITIALIZE_PASS_BEGIN(RISCVPacketizer, "riscv-packetizer", "RISCV Packetizer", false, false) 
+INITIALIZE_PASS_BEGIN(RISCVPacketizer, "riscv-packetizer", "RISCV Packetizer",
+                      false, false)
 INITIALIZE_PASS_DEPENDENCY(MachineDominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(MachineLoopInfoWrapperPass)
-INITIALIZE_PASS_END(RISCVPacketizer, "riscv-packetizer", "RISCV Packetizer", false, false)
+INITIALIZE_PASS_END(RISCVPacketizer, "riscv-packetizer", "RISCV Packetizer",
+                    false, false)
 
-RISCVPacketizerList::RISCVPacketizerList(MachineFunction &MF, 
-    MachineLoopInfo &MLI, AAResults *AA) 
+RISCVPacketizerList::RISCVPacketizerList(MachineFunction &MF,
+                                         MachineLoopInfo &MLI, AAResults *AA)
     : VLIWPacketizerList(MF, MLI, nullptr) {}
 
 bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
-    LLVM_DEBUG(dbgs() << "RISCV Packetizer: runOnMachineFunction " << MF.getName() << "\n");
+  LLVM_DEBUG(dbgs() << "RISCV Packetizer: runOnMachineFunction " << MF.getName()
+                    << "\n");
 
-    const RISCVSubtarget &ST = MF.getSubtarget<RISCVSubtarget>();
-    const InstrItineraryData *IID = ST.getInstrItineraryData();
-    if (!IID || IID->isEmpty())
-        return false;
+  const RISCVSubtarget &ST = MF.getSubtarget<RISCVSubtarget>();
+  const InstrItineraryData *IID = ST.getInstrItineraryData();
+  if (!IID || IID->isEmpty())
+    return false;
 
-    MachineLoopInfo &MLI = getAnalysis<MachineLoopInfoWrapperPass>().getLI();
+  MachineLoopInfo &MLI = getAnalysis<MachineLoopInfoWrapperPass>().getLI();
 
-    // Instantiate the packetizer.
-    RISCVPacketizerList Packetizer(MF, MLI, nullptr);
+  // Instantiate the packetizer.
+  RISCVPacketizerList Packetizer(MF, MLI, nullptr);
 
-    // DFA state table should not be empty.
-    assert(Packetizer.getResourceTracker() && "Empty DFA table!");
+  // DFA state table should not be empty.
+  assert(Packetizer.getResourceTracker() && "Empty DFA table!");
 
-    // Loop over all basic blocks and remove KILL pseudo-instructions
-    // These instructions confuse the dependence analysis. Consider:
-    // D0 = ...   (Insn 0)
-    // R0 = KILL R0, D0 (Insn 1)
-    // R0 = ... (Insn 2)
-    // Here, Insn 1 will result in the dependence graph not emitting an output
-    // dependence between Insn 0 and Insn 2. This can lead to incorrect
-    // packetization
-    for (MachineBasicBlock &MB : MF) {
-        for (MachineInstr &MI : llvm::make_early_inc_range(MB))
-        if (MI.isKill())
-            MB.erase(&MI);
+  // Loop over all basic blocks and remove KILL pseudo-instructions
+  // These instructions confuse the dependence analysis. Consider:
+  // D0 = ...   (Insn 0)
+  // R0 = KILL R0, D0 (Insn 1)
+  // R0 = ... (Insn 2)
+  // Here, Insn 1 will result in the dependence graph not emitting an output
+  // dependence between Insn 0 and Insn 2. This can lead to incorrect
+  // packetization
+  for (MachineBasicBlock &MB : MF) {
+    for (MachineInstr &MI : llvm::make_early_inc_range(MB))
+      if (MI.isKill())
+        MB.erase(&MI);
+  }
+
+  bool Changed = false;
+
+  // Loop over all of the basic blocks.
+  for (MachineBasicBlock &MB : MF) {
+    auto End = MB.end();
+    // The packetizable region covers all instructions in the block,
+    // including blocks that consist solely of terminator instructions
+    // (e.g., a standalone unconditional branch).
+    MachineBasicBlock::iterator RB = MB.begin();
+    MachineBasicBlock::iterator RE = RB;
+    // Advance past all non-terminator instructions.
+    while (RE != End && !RE->isTerminator())
+      ++RE;
+    // Include all consecutive terminator instructions so that every
+    // branch / jump in the block is wrapped into a BUNDLE and can be
+    // padded to the full issue-width by RISCVPackPadding.
+    while (RE != End && RE->isTerminator())
+      ++RE;
+    if (RB != RE) {
+      Packetizer.PacketizeMIs(&MB, RB, RE);
+      Changed = true;
     }
+  }
 
-    bool Changed = false;
-
-    // Loop over all of the basic blocks.
-    for (MachineBasicBlock &MB : MF) {
-        auto End = MB.end();
-        // The packetizable region covers all instructions in the block,
-        // including blocks that consist solely of terminator instructions
-        // (e.g., a standalone unconditional branch).
-        MachineBasicBlock::iterator RB = MB.begin();
-        MachineBasicBlock::iterator RE = RB;
-        // Advance past all non-terminator instructions.
-        while (RE != End && !RE->isTerminator())
-            ++RE;
-        // Include all consecutive terminator instructions so that every
-        // branch / jump in the block is wrapped into a BUNDLE and can be
-        // padded to the full issue-width by RISCVPackPadding.
-        while (RE != End && RE->isTerminator())
-            ++RE;
-        if (RB != RE) {
-            Packetizer.PacketizeMIs(&MB, RB, RE);
-            Changed = true;
-        }
-    }
-
-    return Changed;
-
+  return Changed;
 }
 
 // Initialize packetizer flags.
@@ -131,43 +148,43 @@ void RISCVPacketizerList::initPacketizerState() {
   // is cleared only when endPacket() emits or abandons that packet.
 }
 
-bool RISCVPacketizerList::ignorePseudoInstruction(const MachineInstr &MI,
-    const MachineBasicBlock *MBB) {
-    if (MI.isDebugInstr())
-        return true;
-    if (MI.isImplicitDef())
-        return true;
+bool RISCVPacketizerList::ignorePseudoInstruction(
+    const MachineInstr &MI, const MachineBasicBlock *MBB) {
+  if (MI.isDebugInstr())
+    return true;
+  if (MI.isImplicitDef())
+    return true;
 
-    return false;
+  return false;
 }
 
 bool RISCVPacketizerList::shouldNotEnterBundle(const MachineInstr &MI) const {
-    // Position directives and inline assembly are packet boundaries but should
-    // not be wrapped in BUNDLE. Inline assembly is emitted immediately after
-    // the preceding packet; authors are responsible for supplying a complete,
-    // legal VLIW packet when the assembly string contains instructions.
-    return MI.isPosition() || MI.isInlineAsm();
+  // Position directives and inline assembly are packet boundaries but should
+  // not be wrapped in BUNDLE. Inline assembly is emitted immediately after
+  // the preceding packet; authors are responsible for supplying a complete,
+  // legal VLIW packet when the assembly string contains instructions.
+  return MI.isPosition() || MI.isInlineAsm();
 }
 
 bool RISCVPacketizerList::isSoloInstruction(const MachineInstr &MI) {
-    switch (MI.getOpcode()) {
-    case RISCV::FENCE:
-    case RISCV::FENCE_I:
-    case RISCV::FENCE_TSO:
-        return true;
-    default:
-        return false;
-    }
+  switch (MI.getOpcode()) {
+  case RISCV::FENCE:
+  case RISCV::FENCE_I:
+  case RISCV::FENCE_TSO:
+    return true;
+  default:
+    return false;
+  }
 }
 
 bool RISCVPacketizerList::shouldEmitBundleForSoloInstruction(
     const MachineInstr &MI) {
-    assert(isSoloInstruction(MI) &&
-           "shouldEmitBundleForSoloInstruction is only for solo instructions");
-    // Current rule: position/symbolic instructions do not get a BUNDLE.
-    if (MI.isPosition())
-        return false;
-    return true;
+  assert(isSoloInstruction(MI) &&
+         "shouldEmitBundleForSoloInstruction is only for solo instructions");
+  // Current rule: position/symbolic instructions do not get a BUNDLE.
+  if (MI.isPosition())
+    return false;
+  return true;
 }
 
 void RISCVPacketizerList::PacketizeMIs(MachineBasicBlock *MBB,
@@ -243,14 +260,12 @@ void RISCVPacketizerList::PacketizeMIs(MachineBasicBlock *MBB,
                        commitCandidateToPacketState(SUI);
     if (!CandidateOK) {
       LLVM_DEBUG(if (ResourceAvail) dbgs()
-                 << "Instruction cannot enter the current packet\n  "
-                 << MI);
+                 << "Instruction cannot enter the current packet\n  " << MI);
       endPacket(MBB, MI);
 
       if (!ResourceTracker->canReserveResources(MI) ||
           !commitCandidateToPacketState(SUI))
-        report_fatal_error(
-            "Dandelion instruction cannot start a legal packet");
+        report_fatal_error("Dandelion instruction cannot start a legal packet");
     }
 
     LLVM_DEBUG(dbgs() << "* Adding MI to packet " << MI << '\n');
@@ -264,24 +279,24 @@ void RISCVPacketizerList::PacketizeMIs(MachineBasicBlock *MBB,
 
 void RISCVPacketizerList::emitBundleForCurrentPacket(
     MachineBasicBlock *MBB, MachineBasicBlock::iterator MI) {
-    LLVM_DEBUG({
-        dbgs() << "Finalizing packet:\n";
-        unsigned Idx = 0;
-        for (MachineInstr *M : CurrentPacketMIs) {
-            unsigned R = ResourceTracker->getUsedResources(Idx++);
-            dbgs() << " * [res:0x" << utohexstr(R) << "] " << *M;
-        }
-    });
-    MachineInstr &MIFirst = *CurrentPacketMIs.front();
-    assert(PacketState.AssignedSlots.size() == CurrentPacketMIs.size() &&
-           "Dandelion packet slot map is out of sync");
-    RISCVVLIW::finalizeRISCVBundle(*MBB, MIFirst.getIterator(),
-                                   MI.getInstrIterator(),
-                                   PacketState.AssignedSlots);
-    CurrentPacketMIs.clear();
-    PacketState.clear();
-    ResourceTracker->clearResources();
-    LLVM_DEBUG(dbgs() << "End packet\n");
+  LLVM_DEBUG({
+    dbgs() << "Finalizing packet:\n";
+    unsigned Idx = 0;
+    for (MachineInstr *M : CurrentPacketMIs) {
+      unsigned R = ResourceTracker->getUsedResources(Idx++);
+      dbgs() << " * [res:0x" << utohexstr(R) << "] " << *M;
+    }
+  });
+  MachineInstr &MIFirst = *CurrentPacketMIs.front();
+  assert(PacketState.AssignedSlots.size() == CurrentPacketMIs.size() &&
+         "Dandelion packet slot map is out of sync");
+  RISCVVLIW::finalizeRISCVBundle(*MBB, MIFirst.getIterator(),
+                                 MI.getInstrIterator(),
+                                 PacketState.AssignedSlots);
+  CurrentPacketMIs.clear();
+  PacketState.clear();
+  ResourceTracker->clearResources();
+  LLVM_DEBUG(dbgs() << "End packet\n");
 }
 
 bool RISCVPacketizerList::buildTrialPacketState(
@@ -291,8 +306,7 @@ bool RISCVPacketizerList::buildTrialPacketState(
       TrialState.SUnits.size() >= RISCVVLIW::DandelionSlots)
     return false;
 
-  const InstrItineraryData *IID =
-      MF.getSubtarget().getInstrItineraryData();
+  const InstrItineraryData *IID = MF.getSubtarget().getInstrItineraryData();
   unsigned NewIdx = TrialState.SUnits.size();
   TrialState.SUnits.push_back(NewSU);
 
@@ -304,18 +318,18 @@ bool RISCVPacketizerList::buildTrialPacketState(
 
       switch (Dep.getKind()) {
       case SDep::Data:
-        if (!Dep.isAssignedRegDep() ||
+        if (DisableShallowDependency || !Dep.isAssignedRegDep() ||
             !RISCVVLIW::isShallowDepOK(
-                *OldSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer,
-                IID) ||
+                *OldSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer, IID) ||
             !RISCVVLIW::isShallowDepOK(
-                *NewSU->getInstr(), RISCVVLIW::ShallowDepRole::Consumer,
-                IID))
+                *NewSU->getInstr(), RISCVVLIW::ShallowDepRole::Consumer, IID))
           return false;
         if (TrialState.ShallowProducer &&
             (TrialState.ShallowProducer != OldSU ||
-             TrialState.ShallowConsumer != NewSU))
+             TrialState.ShallowConsumer != NewSU)) {
+          ++NumRejectedSecondDataPair;
           return false;
+        }
         TrialState.ShallowProducer = OldSU;
         TrialState.ShallowConsumer = NewSU;
         TrialState.ShallowDataRegs.push_back(Dep.getReg());
@@ -326,11 +340,9 @@ bool RISCVPacketizerList::buildTrialPacketState(
         break;
       case SDep::Anti:
         if (RISCVVLIW::isShallowDepOK(
-                *NewSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer,
-                IID) &&
-            RISCVVLIW::isShallowDepOK(
-                *OldSU->getInstr(), RISCVVLIW::ShallowDepRole::Consumer,
-                IID))
+                *NewSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer, IID) &&
+            RISCVVLIW::isShallowDepOK(*OldSU->getInstr(),
+                                      RISCVVLIW::ShallowDepRole::Consumer, IID))
           TrialState.MustPrecede[OldIdx][NewIdx] = true;
         break;
       case SDep::Order:
@@ -344,8 +356,12 @@ bool RISCVPacketizerList::buildTrialPacketState(
   SmallVector<MachineInstr *, RISCVVLIW::DandelionSlots> Instrs;
   for (SUnit *SU : TrialState.SUnits)
     Instrs.push_back(SU->getInstr());
-  return RISCVVLIW::assignSlots(Instrs, IID, TrialState.MustPrecede,
-                                TrialState.AssignedSlots);
+  if (RISCVVLIW::assignSlots(Instrs, IID, TrialState.MustPrecede,
+                             TrialState.AssignedSlots))
+    return true;
+  if (!PacketState.SUnits.empty())
+    ++NumSlotConstraintSplits;
+  return false;
 }
 
 void RISCVPacketizerList::markShallowInternalReads(
@@ -357,8 +373,7 @@ void RISCVPacketizerList::markShallowInternalReads(
   for (Register Reg : State.ShallowDataRegs) {
     bool Marked = false;
     for (MachineOperand &MO : Consumer->operands()) {
-      if (!MO.isReg() || !MO.isUse() || MO.isImplicit() ||
-          MO.getReg() != Reg)
+      if (!MO.isReg() || !MO.isUse() || MO.isImplicit() || MO.getReg() != Reg)
         continue;
       MO.setIsInternalRead(true);
       Marked = true;
@@ -371,6 +386,10 @@ bool RISCVPacketizerList::commitCandidateToPacketState(SUnit *NewSU) {
   PacketDependencyState TrialState;
   if (!buildTrialPacketState(NewSU, TrialState))
     return false;
+  NumShallowDataEdges +=
+      TrialState.ShallowDataRegs.size() - PacketState.ShallowDataRegs.size();
+  if (!PacketState.ShallowProducer && TrialState.ShallowProducer)
+    ++NumShallowEndpointPairs;
   markShallowInternalReads(TrialState);
   PacketState = std::move(TrialState);
   return true;
@@ -388,35 +407,35 @@ bool RISCVPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) {
 }
 
 bool RISCVPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) {
-  const InstrItineraryData *IID =
-      MF.getSubtarget().getInstrItineraryData();
+  if (DisableShallowDependency)
+    return false;
+  const InstrItineraryData *IID = MF.getSubtarget().getInstrItineraryData();
   bool HasData = false;
   for (const SDep &Dep : SUJ->Succs) {
     if (Dep.getSUnit() != SUI || Dep.getKind() != SDep::Data)
       continue;
     HasData = true;
     if (!Dep.isAssignedRegDep() ||
-        !RISCVVLIW::isShallowDepOK(
-            *SUJ->getInstr(), RISCVVLIW::ShallowDepRole::Producer, IID) ||
-        !RISCVVLIW::isShallowDepOK(
-            *SUI->getInstr(), RISCVVLIW::ShallowDepRole::Consumer, IID))
+        !RISCVVLIW::isShallowDepOK(*SUJ->getInstr(),
+                                   RISCVVLIW::ShallowDepRole::Producer, IID) ||
+        !RISCVVLIW::isShallowDepOK(*SUI->getInstr(),
+                                   RISCVVLIW::ShallowDepRole::Consumer, IID))
       return false;
-    if (PacketState.ShallowProducer &&
-        (PacketState.ShallowProducer != SUJ ||
-         PacketState.ShallowConsumer != SUI))
+    if (PacketState.ShallowProducer && (PacketState.ShallowProducer != SUJ ||
+                                        PacketState.ShallowConsumer != SUI))
       return false;
   }
   return HasData;
 }
 
 bool RISCVPacketizerList::shouldAddToPacket(const MachineInstr &MI) {
-    // If SLOT7 (res bit 0x80, IIC_Jump) is already occupied by an instruction
-    // in the current packet, no further instruction may join this packet.
-    for (unsigned i = 0; i < CurrentPacketMIs.size(); ++i) {
-        if (ResourceTracker->getUsedResources(i) & 0x80)
-            return false;
-    }
-    return true;
+  // If SLOT7 (res bit 0x80, IIC_Jump) is already occupied by an instruction
+  // in the current packet, no further instruction may join this packet.
+  for (unsigned i = 0; i < CurrentPacketMIs.size(); ++i) {
+    if (ResourceTracker->getUsedResources(i) & 0x80)
+      return false;
+  }
+  return true;
 }
 
 void RISCVPacketizerList::endPacket(MachineBasicBlock *MBB,

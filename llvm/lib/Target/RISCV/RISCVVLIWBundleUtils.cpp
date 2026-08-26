@@ -23,8 +23,7 @@ static constexpr unsigned DandelionSlotMapCountShift = 24;
 static constexpr unsigned DandelionSlotMapTagShift = 28;
 
 uint32_t RISCVVLIW::encodeDandelionSlotMap(ArrayRef<int> AssignedSlots) {
-  assert(!AssignedSlots.empty() &&
-         AssignedSlots.size() <= DandelionSlots &&
+  assert(!AssignedSlots.empty() && AssignedSlots.size() <= DandelionSlots &&
          "invalid Dandelion slot-map size");
 
   uint32_t Encoding = DandelionSlotMapTag << DandelionSlotMapTagShift;
@@ -42,9 +41,9 @@ uint32_t RISCVVLIW::encodeDandelionSlotMap(ArrayRef<int> AssignedSlots) {
   return Encoding;
 }
 
-bool RISCVVLIW::decodeDandelionSlotMap(
-    const MachineInstr &Bundle, unsigned NumMembers,
-    SmallVectorImpl<int> &AssignedSlots) {
+bool RISCVVLIW::decodeDandelionSlotMap(const MachineInstr &Bundle,
+                                       unsigned NumMembers,
+                                       SmallVectorImpl<int> &AssignedSlots) {
   AssignedSlots.clear();
   if (!Bundle.isBundle() || Bundle.getNumOperands() == 0 ||
       !Bundle.getOperand(0).isImm())
@@ -53,8 +52,7 @@ bool RISCVVLIW::decodeDandelionSlotMap(
   uint32_t Encoding = static_cast<uint32_t>(Bundle.getOperand(0).getImm());
   if ((Encoding >> DandelionSlotMapTagShift) != DandelionSlotMapTag)
     return false;
-  unsigned Count =
-      (Encoding >> DandelionSlotMapCountShift) & 0xF;
+  unsigned Count = (Encoding >> DandelionSlotMapCountShift) & 0xF;
   if (Count == 0 || Count > DandelionSlots || Count != NumMembers)
     return false;
 
@@ -70,9 +68,9 @@ bool RISCVVLIW::decodeDandelionSlotMap(
   return true;
 }
 
-bool RISCVVLIW::verifyDandelionSlotMap(
-    const MachineInstr &Bundle, ArrayRef<MachineInstr *> Members,
-    const InstrItineraryData *IID) {
+bool RISCVVLIW::verifyDandelionSlotMap(const MachineInstr &Bundle,
+                                       ArrayRef<MachineInstr *> Members,
+                                       const InstrItineraryData *IID) {
   SmallVector<int, DandelionSlots> Slots;
   if (!decodeDandelionSlotMap(Bundle, Members.size(), Slots))
     return false;
@@ -110,6 +108,7 @@ MachineInstr &RISCVVLIW::finalizeRISCVBundle(
 
   SmallSetVector<Register, 32> PacketDefs;
   SmallSet<Register, 8> DeadDefs;
+  SmallSet<Register, 8> KilledDefs;
   SmallSetVector<Register, 16> PacketUses;
   SmallSet<Register, 8> KilledUses;
   SmallSet<Register, 8> UndefUses;
@@ -124,8 +123,11 @@ MachineInstr &RISCVVLIW::finalizeRISCVBundle(
       if (!Reg)
         continue;
 
-      if (MO.isInternalRead())
+      if (MO.isInternalRead()) {
+        if (MO.isKill())
+          KilledDefs.insert(Reg);
         continue;
+      }
 
       PacketUses.insert(Reg);
       if (MO.isKill())
@@ -144,6 +146,7 @@ MachineInstr &RISCVVLIW::finalizeRISCVBundle(
         continue;
 
       PacketDefs.insert(Reg);
+      KilledDefs.erase(Reg);
       // Members are in increasing slot order. For WAW, the highest slot wins,
       // so the last definition determines whether the packet output is dead.
       if (MO.isDead())
@@ -167,7 +170,8 @@ MachineInstr &RISCVVLIW::finalizeRISCVBundle(
 
   for (Register Reg : PacketDefs)
     MIB.addReg(Reg, getDefRegState(true) |
-                        getDeadRegState(DeadDefs.contains(Reg)) |
+                        getDeadRegState(DeadDefs.contains(Reg) ||
+                                        KilledDefs.contains(Reg)) |
                         getImplRegState(true));
 
   for (Register Reg : PacketUses)

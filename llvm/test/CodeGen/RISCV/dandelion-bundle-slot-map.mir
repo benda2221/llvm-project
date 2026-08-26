@@ -6,11 +6,21 @@
 # RUN:   -run-pass=riscv-packetizer,riscv-pack-padding \
 # RUN:   -verify-machineinstrs -o - %t/valid.mir \
 # RUN:   | FileCheck %s --check-prefix=PAD
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer,riscv-pack-padding,riscv-pack-padding \
+# RUN:   -verify-machineinstrs -o - %t/valid.mir \
+# RUN:   | FileCheck %s --check-prefix=PAD
 # RUN: not --crash llc -mtriple=riscv32 -mcpu=dandelion \
 # RUN:   -run-pass=riscv-pack-padding -o /dev/null %t/bad-count.mir 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=BAD
 # RUN: not --crash llc -mtriple=riscv32 -mcpu=dandelion \
 # RUN:   -run-pass=riscv-pack-padding -o /dev/null %t/bad-slot.mir 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=BAD
+# RUN: not --crash llc -mtriple=riscv32 -mcpu=dandelion \
+# RUN:   -run-pass=riscv-pack-padding -o /dev/null %t/bad-duplicate.mir 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=BAD
+# RUN: not --crash llc -mtriple=riscv32 -mcpu=dandelion \
+# RUN:   -run-pass=riscv-pack-padding -o /dev/null %t/bad-missing.mir 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=BAD
 
 # Packetizer keeps the original LW/FEQ_S/PseudoRET order while recording the
@@ -76,5 +86,36 @@ body: |
   bb.0:
     BUNDLE 3506438145 {
       renamable $x13 = FEQ_S undef $f0_f, undef $f0_f
+    }
+...
+
+#--- bad-duplicate.mir
+--- |
+  define void @bad_duplicate() { ret void }
+...
+---
+name: bad_duplicate
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    BUNDLE 3523215369 {
+      renamable $x13 = ADDI renamable $x10, 1
+      renamable $x14 = XORI renamable $x11, 2
+    }
+...
+
+#--- bad-missing.mir
+--- |
+  define void @bad_missing() { ret void }
+...
+---
+name: bad_missing
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10
+    BUNDLE {
+      renamable $x13 = ADDI renamable $x10, 1
     }
 ...

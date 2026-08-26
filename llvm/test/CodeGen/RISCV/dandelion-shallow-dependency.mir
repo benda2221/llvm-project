@@ -10,8 +10,13 @@
   define void @one_raw_pair() { ret void }
   define void @two_raw_pairs() { ret void }
   define void @raw_chain() { ret void }
+  define void @one_producer_two_consumers() { ret void }
+  define void @two_producers_one_consumer() { ret void }
   define void @mul_raw() { ret void }
   define void @alu_war() { ret void }
+  define void @alu_waw() { ret void }
+  define void @non_shallow_war_reverse() { ret void }
+  define void @internal_kill_lifetime() { ret void }
 ...
 ---
 name: one_raw_pair
@@ -92,6 +97,50 @@ body: |
 # PACKET-NOT: internal renamable $x14
 
 ---
+name: one_producer_two_consumers
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11, $x12
+    renamable $x13 = ADDI renamable $x10, 1
+    renamable $x14 = ADD renamable $x13, renamable $x11
+    renamable $x15 = XOR renamable $x13, renamable $x12
+    PseudoRET
+...
+
+# The producer-to-second-consumer edge has a different endpoint pair.
+# PACKET-LABEL: name: one_producer_two_consumers
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = ADDI
+# PACKET-NEXT: renamable $x14 = ADD internal renamable $x13
+# PACKET-NEXT: }
+# PACKET-NEXT: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x15 = XOR renamable $x13
+# PACKET-NOT: internal renamable $x13
+
+---
+name: two_producers_one_consumer
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    renamable $x13 = ADDI renamable $x10, 1
+    renamable $x14 = XORI renamable $x11, 2
+    renamable $x15 = ADD renamable $x13, renamable $x14
+    PseudoRET
+...
+
+# The two producer-to-consumer Data edges also form two endpoint pairs.
+# PACKET-LABEL: name: two_producers_one_consumer
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = ADDI
+# PACKET-NEXT: renamable $x14 = XORI
+# PACKET-NEXT: }
+# PACKET-NEXT: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x15 = ADD renamable $x13, renamable $x14
+# PACKET-NOT: internal
+
+---
 name: mul_raw
 tracksRegLiveness: true
 body: |
@@ -129,3 +178,69 @@ body: |
 # PACKET-NEXT: renamable $x13 = ADD renamable $x10
 # PACKET-NEXT: renamable $x10 = XORI
 # PACKET-NOT: internal renamable $x10
+
+---
+name: alu_waw
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    dead renamable $x13 = ADDI renamable $x10, 1
+    renamable $x13 = XORI renamable $x11, 3
+    PseudoRET
+...
+
+# Two flexible ALUs with a WAW have a legal increasing-slot solution and are
+# not rejected by a conservative maximum-slot comparison.
+# PACKET-LABEL: name: alu_waw
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: dead renamable $x13 = ADDI
+# PACKET-NEXT: renamable $x13 = XORI
+
+---
+name: non_shallow_war_reverse
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x13
+    renamable $f1_f = FCVT_S_W renamable $x13, 7
+    renamable $x13 = FEQ_S undef $f0_f, undef $f0_f
+    PseudoRET
+...
+
+# An IntToFP/FEQ_S WAR is not shallow-capable, so the fixed slot-0 writer may
+# be placed below the fixed slot-2 reader.  The FP conversion still reads the
+# packet-entry x13 value.
+# PACKET-LABEL: name: non_shallow_war_reverse
+# PACKET: BUNDLE 3539993026,
+# PACKET-NEXT: renamable $f1_f = FCVT_S_W renamable $x13
+# PACKET-NEXT: renamable $x13 = FEQ_S
+# PACKET-NOT: internal renamable $x13
+# PAD-LABEL: name: non_shallow_war_reverse
+# PAD: BUNDLE 3640313480,
+# PAD-NEXT: renamable $x13 = FEQ_S
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: renamable $f1_f = FCVT_S_W renamable $x13
+# PAD-NOT: internal renamable $x13
+
+---
+name: internal_kill_lifetime
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    renamable $x13 = ADDI renamable $x10, 1
+    renamable $x14 = ADD killed renamable $x13, renamable $x11
+    PseudoRET
+...
+
+# Killing the only internal use makes the producer result dead at packet exit.
+# The bundle header must not treat the internal use as a packet-entry use.
+# PACKET-LABEL: name: internal_kill_lifetime
+# PACKET: BUNDLE {{[0-9]+}}, implicit-def dead $x13
+# PACKET-NOT: implicit killed $x13
+# PACKET: renamable $x14 = ADD internal killed renamable $x13
+# PAD-LABEL: name: internal_kill_lifetime
+# PAD: BUNDLE 3640313480, {{.*}}implicit-def dead $x13
+# PAD-NOT: implicit killed $x13
+# PAD: renamable $x14 = ADD internal killed renamable $x13
