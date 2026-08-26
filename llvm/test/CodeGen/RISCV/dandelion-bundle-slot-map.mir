@@ -1,0 +1,80 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer -verify-machineinstrs -o - %t/valid.mir \
+# RUN:   | FileCheck %s --check-prefix=PACKET
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer,riscv-pack-padding \
+# RUN:   -verify-machineinstrs -o - %t/valid.mir \
+# RUN:   | FileCheck %s --check-prefix=PAD
+# RUN: not --crash llc -mtriple=riscv32 -mcpu=dandelion \
+# RUN:   -run-pass=riscv-pack-padding -o /dev/null %t/bad-count.mir 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=BAD
+# RUN: not --crash llc -mtriple=riscv32 -mcpu=dandelion \
+# RUN:   -run-pass=riscv-pack-padding -o /dev/null %t/bad-slot.mir 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=BAD
+
+# Packetizer keeps the original LW/FEQ_S/PseudoRET order while recording the
+# non-monotonic [5,0,7] mapping. Padding later puts FEQ_S in slot 0, LW in slot
+# 5 and PseudoRET in slot 7, and writes the canonical mapping.
+# PACKET-LABEL: name: nonmonotonic_map
+# PACKET: BUNDLE 3539993029,
+# PACKET-NEXT: renamable $x13 = LW
+# PACKET-NEXT: renamable $x14 = FEQ_S
+# PACKET-NEXT: PseudoRET
+# PAD-LABEL: name: nonmonotonic_map
+# PAD: BUNDLE 3640313480,
+# PAD-NEXT: renamable $x14 = FEQ_S
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: renamable $x13 = LW
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: PseudoRET
+
+# BAD: LLVM ERROR: RISCVPackPadding: invalid or missing packetizer slot assignment
+
+#--- valid.mir
+--- |
+  define void @nonmonotonic_map() { ret void }
+...
+---
+name: nonmonotonic_map
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10
+    renamable $x13 = LW renamable $x10, 0 :: (load (s32))
+    renamable $x14 = FEQ_S undef $f0_f, undef $f0_f
+    PseudoRET
+...
+
+#--- bad-count.mir
+--- |
+  define void @bad_count() { ret void }
+...
+---
+name: bad_count
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10
+    BUNDLE 3506438145 {
+      renamable $x13 = ADDI renamable $x10, 1
+      PseudoRET
+    }
+...
+
+#--- bad-slot.mir
+--- |
+  define void @bad_slot() { ret void }
+...
+---
+name: bad_slot
+tracksRegLiveness: true
+body: |
+  bb.0:
+    BUNDLE 3506438145 {
+      renamable $x13 = FEQ_S undef $f0_f, undef $f0_f
+    }
+...

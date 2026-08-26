@@ -10,14 +10,9 @@
 // processor.
 //
 // The pass runs after the VLIW packetizer.  For every BUNDLE instruction it:
-//   1. Determines the slot(s) each constituent instruction may occupy using
-//      the itinerary data.
-//   2. Assigns each instruction to a concrete slot, respecting:
-//        - Instructions must be placed at one of their legal slot positions.
-//        - WAW-dependent instructions preserve their relative order (the
-//          earlier-writing instruction gets the lower slot number); this is
-//          guaranteed by assigning slots left-to-right from the already
-//          WAW-safe input order produced by the packetizer.
+//   1. Reads and validates the concrete slot assignment recorded by the
+//      packetizer on the BUNDLE header.
+//   2. Reorders packet members into the recorded slot order.
 //   3. Inserts NOP instructions into unoccupied slots so that every BUNDLE
 //      contains exactly 8 instructions (one per slot 0-7):
 //        - SLOT 0 (FDivFPUPipeline): FEQ_S   x0, f0, f0      (fp-class filler)
@@ -36,8 +31,8 @@
 #include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
-#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include <array>
@@ -67,7 +62,6 @@ public:
 
 private:
   const RISCVInstrInfo *RII = nullptr;
-  const TargetRegisterInfo *TRI = nullptr;
   const InstrItineraryData *IID = nullptr;
 
   bool padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle);
@@ -112,17 +106,19 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
   if (BundleMembers.empty())
     return false;
 
-  SmallVector<RISCVVLIW::SlotPacket, 4> Packets;
-  if (!Instrs.empty())
-    RISCVVLIW::partitionIntoPackets(Instrs, IID, TRI, Packets);
+  SmallVector<int, RISCVVLIW::DandelionSlots> AssignedSlots;
+  if (!RISCVVLIW::decodeDandelionSlotMap(Bundle, Instrs.size(),
+                                         AssignedSlots) ||
+      !RISCVVLIW::verifyDandelionSlotMap(Bundle, Instrs, IID))
+    report_fatal_error(
+        "RISCVPackPadding: invalid or missing packetizer slot assignment");
 
   // -------------------------------------------------------------------------
   // Step 5: Unbundle.
   //
   // Clear BundledPred and BundledSucc flags directly on every instruction in
   // the bundle (including the BUNDLE header) so that we can safely insert and
-  // move them afterwards.  We also clear InternalRead flags on operands,
-  // mirroring what UnpackMachineBundles does.
+  // move them afterwards.  InternalRead flags are intentionally preserved.
   //
   // We avoid the unbundleFromPred()/unbundleFromSucc() helpers here because
   // they modify neighbour flags incrementally and require a specific calling
@@ -139,13 +135,11 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
   Bundle.clearFlag(MachineInstr::BundledSucc);
   Bundle.clearFlag(MachineInstr::BundledPred);
 
-  // Clear bundle flags and internal-read operand flags on all members.
+  // Clear bundle flags on all members.  InternalRead marks identify the one
+  // permitted shallow RAW edge and must survive physical slot reordering.
   for (MachineInstr *MI : BundleMembers) {
     MI->clearFlag(MachineInstr::BundledPred);
     MI->clearFlag(MachineInstr::BundledSucc);
-    for (MachineOperand &MO : MI->operands())
-      if (MO.isReg() && MO.isInternalRead())
-        MO.setIsInternalRead(false);
   }
 
   // Erase the BUNDLE header (flags already cleared, so erase is safe).
@@ -162,49 +156,50 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
     MBB.insert(InsertPt, IDI);
 
   // -------------------------------------------------------------------------
-  // Step 6: Re-insert instructions in legal slot order; fill gaps with NOPs.
-  //         If one input packet has no legal 8-slot assignment, it is split
-  //         into multiple legal 8-slot packets by partitionIntoPackets().
+  // Step 6: Re-insert instructions in the slot order chosen by Packetizer and
+  //         fill gaps with NOPs.  This pass deliberately does not solve slots
+  //         or repartition an already formed packet.
   // -------------------------------------------------------------------------
-  for (const RISCVVLIW::SlotPacket &Packet : Packets) {
-    std::array<MachineInstr *, RISCVVLIW::DandelionSlots> SlotInstr;
-    SlotInstr.fill(nullptr);
-    for (unsigned I = 0, E = Packet.Instrs.size(); I != E; ++I) {
-      assert(Packet.Slots[I] >= 0 &&
-             Packet.Slots[I] < (int)RISCVVLIW::DandelionSlots);
-      SlotInstr[Packet.Slots[I]] = Packet.Instrs[I];
-    }
-
-    MachineBasicBlock::instr_iterator FirstInserted;
-    bool FirstSet = false;
-    for (unsigned Slot = 0; Slot < RISCVVLIW::DandelionSlots; ++Slot) {
-      MachineInstr *MI;
-      if (SlotInstr[Slot]) {
-        MI = SlotInstr[Slot];
-        MBB.insert(InsertPt, MI);
-        LLVM_DEBUG(dbgs() << "  Slot " << Slot << " <- " << *MI);
-      } else if (Slot == 0) {
-        MI = BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::FEQ_S))
-                 .addDef(RISCV::X0)
-                 .addReg(RISCV::F0_F, RegState::Undef)
-                 .addReg(RISCV::F0_F, RegState::Undef);
-        LLVM_DEBUG(dbgs() << "  Slot 0 <- FP NOP (feq.s x0, f0, f0)\n");
-      } else {
-        MI = BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
-                 .addDef(RISCV::X0)
-                 .addReg(RISCV::X0)
-                 .addImm(0);
-        LLVM_DEBUG(dbgs() << "  Slot " << Slot << " <- NOP\n");
-      }
-      if (!FirstSet) {
-        FirstInserted = MI->getIterator();
-        FirstSet = true;
-      }
-    }
-
-    assert(FirstSet && "No instructions inserted");
-    RISCVVLIW::finalizeRISCVBundle(MBB, FirstInserted, InsertPt);
+  std::array<MachineInstr *, RISCVVLIW::DandelionSlots> SlotInstr;
+  SlotInstr.fill(nullptr);
+  for (unsigned I = 0, E = Instrs.size(); I != E; ++I) {
+    assert(AssignedSlots[I] >= 0 &&
+           AssignedSlots[I] < (int)RISCVVLIW::DandelionSlots);
+    SlotInstr[AssignedSlots[I]] = Instrs[I];
   }
+
+  MachineBasicBlock::instr_iterator FirstInserted;
+  bool FirstSet = false;
+  for (unsigned Slot = 0; Slot < RISCVVLIW::DandelionSlots; ++Slot) {
+    MachineInstr *MI;
+    if (SlotInstr[Slot]) {
+      MI = SlotInstr[Slot];
+      MBB.insert(InsertPt, MI);
+      LLVM_DEBUG(dbgs() << "  Slot " << Slot << " <- " << *MI);
+    } else if (Slot == 0) {
+      MI = BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::FEQ_S))
+               .addDef(RISCV::X0)
+               .addReg(RISCV::F0_F, RegState::Undef)
+               .addReg(RISCV::F0_F, RegState::Undef);
+      LLVM_DEBUG(dbgs() << "  Slot 0 <- FP NOP (feq.s x0, f0, f0)\n");
+    } else {
+      MI = BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
+               .addDef(RISCV::X0)
+               .addReg(RISCV::X0)
+               .addImm(0);
+      LLVM_DEBUG(dbgs() << "  Slot " << Slot << " <- NOP\n");
+    }
+    if (!FirstSet) {
+      FirstInserted = MI->getIterator();
+      FirstSet = true;
+    }
+  }
+
+  assert(FirstSet && "No instructions inserted");
+  static constexpr std::array<int, RISCVVLIW::DandelionSlots>
+      CanonicalSlots = {0, 1, 2, 3, 4, 5, 6, 7};
+  RISCVVLIW::finalizeRISCVBundle(MBB, FirstInserted, InsertPt,
+                                 CanonicalSlots);
 
   // Re-insert debug instructions after the rebuilt bundle. They should not
   // consume VLIW slots, but keeping them near the original location preserves
@@ -225,7 +220,6 @@ bool RISCVPackPadding::runOnMachineFunction(MachineFunction &MF) {
 
   const RISCVSubtarget &ST = MF.getSubtarget<RISCVSubtarget>();
   RII = ST.getInstrInfo();
-  TRI = ST.getRegisterInfo();
   IID = ST.getInstrItineraryData();
 
   // Only operate when itinerary data is present (i.e. Dandelion CPU).

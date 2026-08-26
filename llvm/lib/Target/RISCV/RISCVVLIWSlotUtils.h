@@ -11,17 +11,22 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include <array>
 #include <cstdint>
 
 namespace llvm {
 
 class InstrItineraryData;
 class MachineInstr;
-class TargetRegisterInfo;
 
 namespace RISCVVLIW {
 
 static constexpr unsigned DandelionSlots = 8;
+
+enum class ShallowDepRole { Producer, Consumer };
+
+using SlotOrderMatrix =
+    std::array<std::array<bool, DandelionSlots>, DandelionSlots>;
 
 struct SlotPacket {
   SmallVector<MachineInstr *, DandelionSlots> Instrs;
@@ -30,13 +35,18 @@ struct SlotPacket {
 
 uint8_t getSlotMask(unsigned SchedClass, const InstrItineraryData *IID);
 
+bool isShallowDepOK(const MachineInstr &MI, ShallowDepRole Role,
+                    const InstrItineraryData *IID);
+
 bool assignSlots(ArrayRef<MachineInstr *> Instrs, const InstrItineraryData *IID,
-                 const TargetRegisterInfo *TRI,
+                 const SlotOrderMatrix &MustPrecede,
+                 SmallVectorImpl<int> &AssignedSlots);
+
+bool assignSlots(ArrayRef<MachineInstr *> Instrs, const InstrItineraryData *IID,
                  SmallVectorImpl<int> &AssignedSlots);
 
 void partitionIntoPackets(ArrayRef<MachineInstr *> Instrs,
                           const InstrItineraryData *IID,
-                          const TargetRegisterInfo *TRI,
                           SmallVectorImpl<SlotPacket> &Packets);
 
 } // namespace RISCVVLIW

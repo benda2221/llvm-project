@@ -7,9 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVVLIWSlotUtils.h"
-#include "RISCV.h"
 #include "llvm/CodeGen/MachineInstr.h"
-#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
@@ -30,34 +28,26 @@ uint8_t RISCVVLIW::getSlotMask(unsigned SchedClass,
   return Mask;
 }
 
-static bool isDiscardedDef(Register Reg, const TargetRegisterInfo *TRI) {
-  if (!Reg.isValid())
-    return true;
-  if (Reg == RISCV::X0)
-    return true;
-  return TRI && TRI->regsOverlap(Reg, RISCV::X0);
-}
+bool RISCVVLIW::isShallowDepOK(const MachineInstr &MI,
+                               ShallowDepRole Role,
+                               const InstrItineraryData *IID) {
+  (void)Role;
+  if (!IID || IID->isEmpty())
+    return false;
 
-static bool hasOverlappingDef(const MachineInstr &A, const MachineInstr &B,
-                              const TargetRegisterInfo *TRI) {
-  for (const MachineOperand &AO : A.operands()) {
-    if (!AO.isReg() || !AO.isDef() || isDiscardedDef(AO.getReg(), TRI))
-      continue;
-    for (const MachineOperand &BO : B.operands()) {
-      if (!BO.isReg() || !BO.isDef() || isDiscardedDef(BO.getReg(), TRI))
-        continue;
-      if (TRI ? TRI->regsOverlap(AO.getReg(), BO.getReg())
-              : AO.getReg() == BO.getReg())
-        return true;
-    }
-  }
-  return false;
+  unsigned SchedClass = MI.getDesc().getSchedClass();
+  if (getSlotMask(SchedClass, IID) != 0xFE)
+    return false;
+  if (IID->getStageLatency(SchedClass) != 1)
+    return false;
+
+  std::optional<unsigned> DefCycle = IID->getOperandCycle(SchedClass, 0);
+  return DefCycle && *DefCycle == 2;
 }
 
 static bool satisfiesAssignedConstraints(
     unsigned InstrIdx, unsigned Slot, ArrayRef<int> AssignedSlots,
-    const std::array<std::array<bool, RISCVVLIW::DandelionSlots>,
-                     RISCVVLIW::DandelionSlots> &MustPrecede) {
+    const RISCVVLIW::SlotOrderMatrix &MustPrecede) {
   for (unsigned I = 0, E = AssignedSlots.size(); I != E; ++I) {
     if (AssignedSlots[I] < 0)
       continue;
@@ -72,8 +62,7 @@ static bool satisfiesAssignedConstraints(
 
 static bool assignSlotsRec(
     ArrayRef<uint8_t> SlotMasks,
-    const std::array<std::array<bool, RISCVVLIW::DandelionSlots>,
-                     RISCVVLIW::DandelionSlots> &MustPrecede,
+    const RISCVVLIW::SlotOrderMatrix &MustPrecede,
     SmallVectorImpl<int> &AssignedSlots, uint8_t OccupiedSlots) {
   int BestInstr = -1;
   uint8_t BestCandidates = 0;
@@ -121,7 +110,7 @@ static bool assignSlotsRec(
 
 bool RISCVVLIW::assignSlots(ArrayRef<MachineInstr *> Instrs,
                             const InstrItineraryData *IID,
-                            const TargetRegisterInfo *TRI,
+                            const SlotOrderMatrix &MustPrecede,
                             SmallVectorImpl<int> &AssignedSlots) {
   AssignedSlots.assign(Instrs.size(), -1);
   if (Instrs.size() > DandelionSlots)
@@ -136,18 +125,18 @@ bool RISCVVLIW::assignSlots(ArrayRef<MachineInstr *> Instrs,
     SlotMasks.push_back(Mask);
   }
 
-  std::array<std::array<bool, DandelionSlots>, DandelionSlots> MustPrecede{};
-  for (unsigned I = 0, E = Instrs.size(); I != E; ++I)
-    for (unsigned J = I + 1; J != E; ++J)
-      if (hasOverlappingDef(*Instrs[I], *Instrs[J], TRI))
-        MustPrecede[I][J] = true;
-
   return assignSlotsRec(SlotMasks, MustPrecede, AssignedSlots, 0);
+}
+
+bool RISCVVLIW::assignSlots(ArrayRef<MachineInstr *> Instrs,
+                            const InstrItineraryData *IID,
+                            SmallVectorImpl<int> &AssignedSlots) {
+  SlotOrderMatrix NoConstraints{};
+  return assignSlots(Instrs, IID, NoConstraints, AssignedSlots);
 }
 
 void RISCVVLIW::partitionIntoPackets(ArrayRef<MachineInstr *> Instrs,
                                      const InstrItineraryData *IID,
-                                     const TargetRegisterInfo *TRI,
                                      SmallVectorImpl<SlotPacket> &Packets) {
   Packets.clear();
 
@@ -156,7 +145,7 @@ void RISCVVLIW::partitionIntoPackets(ArrayRef<MachineInstr *> Instrs,
   for (MachineInstr *MI : Instrs) {
     SmallVector<MachineInstr *, DandelionSlots> Trial(Current);
     Trial.push_back(MI);
-    if (assignSlots(Trial, IID, TRI, AssignedSlots)) {
+    if (assignSlots(Trial, IID, AssignedSlots)) {
       Current.push_back(MI);
       continue;
     }
@@ -165,20 +154,20 @@ void RISCVVLIW::partitionIntoPackets(ArrayRef<MachineInstr *> Instrs,
       report_fatal_error("Dandelion VLIW instruction has no legal slot");
 
     SlotPacket Packet;
-    if (!assignSlots(Current, IID, TRI, Packet.Slots))
+    if (!assignSlots(Current, IID, Packet.Slots))
       report_fatal_error("Dandelion VLIW packet has no legal slot assignment");
     Packet.Instrs = Current;
     Packets.push_back(std::move(Packet));
 
     Current.clear();
     Current.push_back(MI);
-    if (!assignSlots(Current, IID, TRI, AssignedSlots))
+    if (!assignSlots(Current, IID, AssignedSlots))
       report_fatal_error("Dandelion VLIW instruction has no legal slot");
   }
 
   if (!Current.empty()) {
     SlotPacket Packet;
-    if (!assignSlots(Current, IID, TRI, Packet.Slots))
+    if (!assignSlots(Current, IID, Packet.Slots))
       report_fatal_error("Dandelion VLIW packet has no legal slot assignment");
     Packet.Instrs = Current;
     Packets.push_back(std::move(Packet));

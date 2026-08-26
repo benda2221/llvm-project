@@ -13,24 +13,37 @@
 #ifndef LLVM_LIB_TARGET_RISCV_RISCVPACKETIZER_H
 #define LLVM_LIB_TARGET_RISCV_RISCVPACKETIZER_H
 
+#include "RISCVVLIWSlotUtils.h"
 #include "llvm/CodeGen/DFAPacketizer.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/ScheduleDAG.h"
-#include <vector>
+#include <utility>
 
 namespace llvm {
 
 class MachineFunction;
 class MachineInstr;
 class MachineLoopInfo;
-class TargetRegisterClass;
 class InstrItineraryData;
 
 class RISCVPacketizerList : public VLIWPacketizerList {
+    struct PacketDependencyState {
+      SmallVector<SUnit *, RISCVVLIW::DandelionSlots> SUnits;
+      SUnit *ShallowProducer = nullptr;
+      SUnit *ShallowConsumer = nullptr;
+      SmallVector<Register, 4> ShallowDataRegs;
+      RISCVVLIW::SlotOrderMatrix MustPrecede{};
+      SmallVector<int, RISCVVLIW::DandelionSlots> AssignedSlots;
 
-    // Check if there is a dependence between some instruction already in this
-    // packet and this instruction.
-    bool Dependence;
+      void clear() {
+        SUnits.clear();
+        ShallowProducer = nullptr;
+        ShallowConsumer = nullptr;
+        ShallowDataRegs.clear();
+        MustPrecede = {};
+        AssignedSlots.clear();
+      }
+    } PacketState;
 
 private:
     /// Return true for instructions that should not be wrapped into BUNDLE.
@@ -46,6 +59,13 @@ private:
     /// packet state. Used when a single-instruction packet must be bundled.
     void emitBundleForCurrentPacket(MachineBasicBlock *MBB,
                                     MachineBasicBlock::iterator MI);
+
+    bool buildTrialPacketState(SUnit *NewSU,
+                               PacketDependencyState &TrialState) const;
+
+    void markShallowInternalReads(const PacketDependencyState &State) const;
+
+    bool commitCandidateToPacketState(SUnit *NewSU);
 
 public:
     RISCVPacketizerList(MachineFunction &MF, MachineLoopInfo &MLI, AAResults *AA);
@@ -76,13 +96,6 @@ public:
     // isLegalToPruneDependencies - Is it legal to prune dependence between SUI
     // and SUJ.
     bool isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) override;
-
-    // hasWAWHazardWithSlotConstraint - Returns true if SUI has a WAW
-    // dependence on some instruction already in the current packet, and there
-    // is no slot available for SUI that is strictly after the latest possible
-    // slot of that WAW predecessor.
-    bool hasWAWHazardWithSlotConstraint(SUnit *SUI,
-                                        const InstrItineraryData *IID);
 
     // Check if the packetizer should try to add the given instruction to
     // the current packet. One reasons for which it may not be desirable

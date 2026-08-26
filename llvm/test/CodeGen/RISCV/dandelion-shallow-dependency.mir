@@ -1,0 +1,131 @@
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer -verify-machineinstrs -o - %s \
+# RUN:   | FileCheck %s --check-prefix=PACKET
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer,riscv-pack-padding \
+# RUN:   -verify-machineinstrs -o - %s \
+# RUN:   | FileCheck %s --check-prefix=PAD
+
+--- |
+  define void @one_raw_pair() { ret void }
+  define void @two_raw_pairs() { ret void }
+  define void @raw_chain() { ret void }
+  define void @mul_raw() { ret void }
+  define void @alu_war() { ret void }
+...
+---
+name: one_raw_pair
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11, $x12
+    renamable $x13 = ADDI renamable $x10, 1
+    renamable $x14 = ADD renamable $x13, renamable $x11
+    renamable $x15 = XOR renamable $x10, renamable $x12
+    PseudoRET
+...
+
+# The packetizer records member-to-slot mapping but keeps program order.
+# 3556773585 encodes [slot1, slot2, slot3, slot7].
+# PACKET-LABEL: name: one_raw_pair
+# PACKET: BUNDLE 3556773585,
+# PACKET-NEXT: renamable $x13 = ADDI
+# PACKET-NEXT: renamable $x14 = ADD internal renamable $x13
+# PACKET-NEXT: renamable $x15 = XOR
+# PACKET-NEXT: PseudoRET
+
+# Padding consumes the map, retains the shallow identity, and writes the
+# canonical eight-member map 3640313480.
+# PAD-LABEL: name: one_raw_pair
+# PAD: BUNDLE 3640313480,
+# PAD-NEXT: $x0 = FEQ_S
+# PAD-NEXT: renamable $x13 = ADDI
+# PAD-NEXT: renamable $x14 = ADD internal renamable $x13
+# PAD-NEXT: renamable $x15 = XOR
+
+---
+name: two_raw_pairs
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    renamable $x13 = ADDI renamable $x10, 1
+    renamable $x14 = ADD renamable $x13, renamable $x11
+    renamable $x15 = XORI renamable $x10, 7
+    renamable $x16 = SUB renamable $x15, renamable $x11
+    PseudoRET
+...
+
+# A second Data endpoint pair closes the first packet.  Failed trial state must
+# not leave an internal-read mark on the second consumer: its producer is now
+# in the preceding packet.
+# PACKET-LABEL: name: two_raw_pairs
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = ADDI
+# PACKET-NEXT: renamable $x14 = ADD internal renamable $x13
+# PACKET-NEXT: renamable $x15 = XORI
+# PACKET-NEXT: }
+# PACKET-NEXT: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x16 = SUB renamable $x15
+# PACKET-NOT: internal renamable $x15
+
+---
+name: raw_chain
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11, $x12
+    renamable $x13 = ADD renamable $x10, renamable $x11
+    renamable $x14 = XOR renamable $x13, renamable $x12
+    renamable $x15 = SUB renamable $x14, renamable $x10
+    PseudoRET
+...
+
+# A->B and B->C are two endpoint pairs and therefore cannot occupy one packet.
+# PACKET-LABEL: name: raw_chain
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = ADD
+# PACKET-NEXT: renamable $x14 = XOR internal renamable $x13
+# PACKET-NEXT: }
+# PACKET-NEXT: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x15 = SUB renamable $x14
+# PACKET-NOT: internal renamable $x14
+
+---
+name: mul_raw
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    renamable $x13 = MUL renamable $x10, renamable $x11
+    renamable $x14 = ADDI renamable $x13, 1
+    PseudoRET
+...
+
+# A multi-cycle producer is not shallow-dependency eligible.
+# PACKET-LABEL: name: mul_raw
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = MUL
+# PACKET-NEXT: }
+# PACKET-NEXT: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x14 = ADDI renamable $x13
+# PACKET-NOT: internal renamable $x13
+
+---
+name: alu_war
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    renamable $x13 = ADD renamable $x10, renamable $x11
+    renamable $x10 = XORI renamable $x11, 3
+    PseudoRET
+...
+
+# An ALU/ALU WAR preserves reader-before-writer slot order, but the reader is
+# not a true shallow consumer and must not be marked internal.
+# PACKET-LABEL: name: alu_war
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = ADD renamable $x10
+# PACKET-NEXT: renamable $x10 = XORI
+# PACKET-NOT: internal renamable $x10

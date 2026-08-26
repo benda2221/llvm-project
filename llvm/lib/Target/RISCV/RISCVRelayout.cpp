@@ -70,6 +70,8 @@ STATISTIC(RISCVRelayoutNumUnconditionalRelaxed, "[riscv-relayout] Number of unco
 
 // Number of VLIW slots in the Dandelion processor (mirrors RISCVPackPadding).
 static constexpr unsigned DandelionSlotsRL = 8;
+static constexpr std::array<int, DandelionSlotsRL> CanonicalSlotMapRL = {
+    0, 1, 2, 3, 4, 5, 6, 7};
 
 // Returns true if MI is one of the NOP forms inserted by RISCVPackPadding:
 //   SLOT0: FEQ.S x0, f0, f0
@@ -453,7 +455,7 @@ void RISCVRelayoutImpl::wrapInVLIWBundle(MachineBasicBlock &NewBB) {
     return;
 
   SmallVector<RISCVVLIW::SlotPacket, 4> Packets;
-  RISCVVLIW::partitionIntoPackets(Instrs, IID, TRI, Packets);
+  RISCVVLIW::partitionIntoPackets(Instrs, IID, Packets);
 
   MachineBasicBlock::instr_iterator InsertPt = NewBB.instr_end();
   for (MachineInstr *MI : Instrs)
@@ -493,7 +495,8 @@ void RISCVRelayoutImpl::wrapInVLIWBundle(MachineBasicBlock &NewBB) {
     }
 
     assert(FirstSet && "wrapInVLIWBundle: no instructions were inserted");
-    RISCVVLIW::finalizeRISCVBundle(NewBB, FirstInserted, InsertPt);
+    RISCVVLIW::finalizeRISCVBundle(NewBB, FirstInserted, InsertPt,
+                                   CanonicalSlotMapRL);
   }
 
   BlockInfo[NewBB.getNumber()].Size = computeBlockSize(NewBB);
@@ -550,7 +553,8 @@ void RISCVRelayoutImpl::wrapStandaloneBranchesInMBB(MachineBasicBlock &MBB) {
     // SLOT7: branch
     MBB.insert(InsertPt, BrMI);
 
-    RISCVVLIW::finalizeRISCVBundle(MBB, FirstInstr, InsertPt);
+    RISCVVLIW::finalizeRISCVBundle(MBB, FirstInstr, InsertPt,
+                                   CanonicalSlotMapRL);
   }
 
   // Recompute block size (each 4-byte branch is now inside a 32-byte bundle).

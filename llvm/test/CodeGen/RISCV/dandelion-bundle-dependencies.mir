@@ -2,15 +2,13 @@
 # RUN:   -run-pass=riscv-packetizer,riscv-pack-padding -verify-machineinstrs \
 # RUN:   -o - %s | FileCheck %s
 
-# A true RAW cannot use an intra-packet result because Dandelion reads all
-# operands from packet-entry state. The producer and consumer must be split.
+# A one-cycle ALU RAW is a shallow dependency.  It remains in one packet, the
+# producer occupies a lower slot, and the consumer use is an internal read.
 # CHECK-LABEL: name: raw_split
-# CHECK: BUNDLE
+# CHECK: BUNDLE {{[0-9]+}}
 # CHECK-NEXT: $x0 = FEQ_S
 # CHECK-NEXT: renamable $x13 = ADDI
-# CHECK: BUNDLE
-# CHECK-NEXT: $x0 = FEQ_S
-# CHECK-NEXT: renamable $x14 = ADD renamable $x13
+# CHECK-NEXT: renamable $x14 = ADD internal renamable $x13
 --- |
   define void @raw_split() { ret void }
   define void @waw_priority() { ret void }
@@ -42,7 +40,7 @@ body: |
 # at slot 0 and ADDI is assigned a later slot. The highest-slot definition is
 # the live packet output.
 # CHECK-LABEL: name: waw_priority
-# CHECK: BUNDLE implicit-def $x13,
+# CHECK: BUNDLE {{[0-9]+}}, implicit-def $x13,
 # CHECK-NEXT: dead renamable $x13 = FEQ_S
 # CHECK-NEXT: renamable $x13 = ADDI
 
@@ -50,10 +48,10 @@ body: |
 # the earlier write, because the RTL write-port priority would select the
 # wrong architectural result.
 # CHECK-LABEL: name: waw_reverse_split
-# CHECK: BUNDLE
+# CHECK: BUNDLE {{[0-9]+}}
 # CHECK-NEXT: $x0 = FEQ_S
 # CHECK-NEXT: renamable $x13 = ADDI
-# CHECK: BUNDLE
+# CHECK: BUNDLE {{[0-9]+}}
 # CHECK-NEXT: renamable $x13 = FEQ_S
 ---
 name: waw_reverse_split

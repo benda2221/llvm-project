@@ -127,7 +127,8 @@ bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
 
 // Initialize packetizer flags.
 void RISCVPacketizerList::initPacketizerState() {
-    Dependence = false;
+  // PacketState deliberately spans all candidates in the current packet and
+  // is cleared only when endPacket() emits or abandons that packet.
 }
 
 bool RISCVPacketizerList::ignorePseudoInstruction(const MachineInstr &MI,
@@ -206,6 +207,10 @@ void RISCVPacketizerList::PacketizeMIs(MachineBasicBlock *MBB,
       // If this solo instruction should be bundled, emit a one-instruction
       // packet [MI, next(MI)).
       if (shouldEmitBundleForSoloInstruction(MI)) {
+        SUnit *SoloSU = MIToSUnit[&MI];
+        assert(SoloSU && "Missing SUnit Info!");
+        if (!commitCandidateToPacketState(SoloSU))
+          report_fatal_error("Dandelion solo instruction has no legal slot");
         addToPacket(MI);
         auto Next = std::next(BeginItr);
         endPacket(MBB, Next);
@@ -234,29 +239,18 @@ void RISCVPacketizerList::PacketizeMIs(MachineBasicBlock *MBB,
       else
         dbgs() << "  Resources NOT available\n";
     });
-    if (ResourceAvail && shouldAddToPacket(MI)) {
-      for (auto *MJ : CurrentPacketMIs) {
-        SUnit *SUJ = MIToSUnit[MJ];
-        assert(SUJ && "Missing SUnit Info!");
-
-        LLVM_DEBUG(dbgs() << "  Checking against MJ " << *MJ);
-        if (!isLegalToPacketizeTogether(SUI, SUJ)) {
-          LLVM_DEBUG(dbgs() << "  Not legal to add MI, try to prune\n");
-          if (!isLegalToPruneDependencies(SUI, SUJ)) {
-            LLVM_DEBUG(dbgs()
-                       << "  Could not prune dependencies for adding MI\n");
-            endPacket(MBB, MI);
-            break;
-          }
-          LLVM_DEBUG(dbgs() << "  Pruned dependence for adding MI\n");
-        }
-      }
-    } else {
+    bool CandidateOK = ResourceAvail && shouldAddToPacket(MI) &&
+                       commitCandidateToPacketState(SUI);
+    if (!CandidateOK) {
       LLVM_DEBUG(if (ResourceAvail) dbgs()
-                 << "Resources are available, but instruction should not be "
-                    "added to packet\n  "
+                 << "Instruction cannot enter the current packet\n  "
                  << MI);
       endPacket(MBB, MI);
+
+      if (!ResourceTracker->canReserveResources(MI) ||
+          !commitCandidateToPacketState(SUI))
+        report_fatal_error(
+            "Dandelion instruction cannot start a legal packet");
     }
 
     LLVM_DEBUG(dbgs() << "* Adding MI to packet " << MI << '\n');
@@ -279,145 +273,140 @@ void RISCVPacketizerList::emitBundleForCurrentPacket(
         }
     });
     MachineInstr &MIFirst = *CurrentPacketMIs.front();
+    assert(PacketState.AssignedSlots.size() == CurrentPacketMIs.size() &&
+           "Dandelion packet slot map is out of sync");
     RISCVVLIW::finalizeRISCVBundle(*MBB, MIFirst.getIterator(),
-                                   MI.getInstrIterator());
+                                   MI.getInstrIterator(),
+                                   PacketState.AssignedSlots);
     CurrentPacketMIs.clear();
+    PacketState.clear();
     ResourceTracker->clearResources();
     LLVM_DEBUG(dbgs() << "End packet\n");
 }
 
-// Dandelion slot assignment for each IIC class.
-// Slots are numbered 0-7 as defined in RISCVScheduleVLIW.td.
-// The DFA assigns the lowest available slot to each instruction, so the
-// "last possible slot" for a class is the highest-numbered slot it can use.
-//
-// Mapping (from InstrItinData entries in RISCVSchedDandelion.td):
-//   SLOT0           : IIC_FDiv, IIC_FPU, IIC_FPUToGPR
-//   SLOT1           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_FPU, IIC_FPToInt, IIC_Nop
-//   SLOT2           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_FPU, IIC_IntToFP, IIC_Nop
-//   SLOT3           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_MUL, IIC_DIV, IIC_Nop
-//   SLOT4           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_MUL, IIC_DIV, IIC_Nop
-//   SLOT5           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_Load, IIC_Store, IIC_Atomic, IIC_Nop
-//   SLOT6           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_Load, IIC_Store, IIC_Atomic, IIC_Nop
-//   SLOT7           : IIC_ALU, IIC_ALU32, IIC_Shift, IIC_Branch, IIC_Jump,
-//                     IIC_Fence, IIC_CSR, IIC_Nop
-//
-// Returns the set of slots (as a bitmask, bit N = SLOT N) that an instruction
-// of the given itinerary class may occupy.
-static uint8_t getSlotsForIIC(unsigned SchedClass,
-                               const InstrItineraryData *IID) {
-  if (!IID || IID->isEmpty())
-    return 0xFF; // unknown: allow all slots
-
-  const InstrStage *IS = IID->beginStage(SchedClass);
-  const InstrStage *End = IID->endStage(SchedClass);
-  uint8_t Mask = 0;
-  for (; IS != End; ++IS)
-    Mask |= static_cast<uint8_t>(IS->getUnits());
-  return Mask;
-}
-
-// Returns true if MI has a WAW (output) dependency hazard that prevents it
-// from being placed in the current packet.
-//
-// The rule: if instruction NEW has a WAW dependence on any instruction OLD
-// already in the packet, then NEW must be scheduled *after* OLD.  After
-// accounting for the slots already consumed by all instructions in the packet,
-// we check whether there is any slot that is both:
-//   (a) compatible with NEW's IIC, and
-//   (b) strictly higher-numbered than every slot that could be used by OLD.
-//
-// If no such slot exists, NEW cannot be added to this packet.
-bool RISCVPacketizerList::hasWAWHazardWithSlotConstraint(
-    SUnit *SUI, const InstrItineraryData *IID) {
-  MachineInstr *MINew = SUI->getInstr();
-  if (!MINew)
+bool RISCVPacketizerList::buildTrialPacketState(
+    SUnit *NewSU, PacketDependencyState &TrialState) const {
+  TrialState = PacketState;
+  if (!NewSU || !NewSU->getInstr() ||
+      TrialState.SUnits.size() >= RISCVVLIW::DandelionSlots)
     return false;
 
-  unsigned NewSchedClass = MINew->getDesc().getSchedClass();
-  uint8_t NewSlots = getSlotsForIIC(NewSchedClass, IID);
-  if (!NewSlots)
-    return false; // no slot info, be conservative and allow
+  const InstrItineraryData *IID =
+      MF.getSubtarget().getInstrItineraryData();
+  unsigned NewIdx = TrialState.SUnits.size();
+  TrialState.SUnits.push_back(NewSU);
 
-  // Collect slots already consumed by instructions in the current packet.
-  // We track, for each WAW predecessor in the packet, the *highest* slot it
-  // could occupy (worst case for the ordering constraint).
-  for (MachineInstr *MIOld : CurrentPacketMIs) {
-    if (!MIOld)
-      continue;
+  for (unsigned OldIdx = 0; OldIdx != NewIdx; ++OldIdx) {
+    SUnit *OldSU = TrialState.SUnits[OldIdx];
+    for (const SDep &Dep : OldSU->Succs) {
+      if (Dep.getSUnit() != NewSU)
+        continue;
 
-    // Look up the SUnit for this already-packetized instruction.
-    auto It = MIToSUnit.find(MIOld);
-    if (It == MIToSUnit.end())
-      continue;
-    SUnit *SUOld = It->second;
-
-    // Check for WAW (output) dependence: MIOld writes a register that MINew
-    // also writes.
-    bool HasWAW = false;
-    for (const SDep &Dep : SUOld->Succs) {
-      if (Dep.getSUnit() == SUI && Dep.getKind() == SDep::Output) {
-        HasWAW = true;
+      switch (Dep.getKind()) {
+      case SDep::Data:
+        if (!Dep.isAssignedRegDep() ||
+            !RISCVVLIW::isShallowDepOK(
+                *OldSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer,
+                IID) ||
+            !RISCVVLIW::isShallowDepOK(
+                *NewSU->getInstr(), RISCVVLIW::ShallowDepRole::Consumer,
+                IID))
+          return false;
+        if (TrialState.ShallowProducer &&
+            (TrialState.ShallowProducer != OldSU ||
+             TrialState.ShallowConsumer != NewSU))
+          return false;
+        TrialState.ShallowProducer = OldSU;
+        TrialState.ShallowConsumer = NewSU;
+        TrialState.ShallowDataRegs.push_back(Dep.getReg());
+        TrialState.MustPrecede[OldIdx][NewIdx] = true;
+        break;
+      case SDep::Output:
+        TrialState.MustPrecede[OldIdx][NewIdx] = true;
+        break;
+      case SDep::Anti:
+        if (RISCVVLIW::isShallowDepOK(
+                *NewSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer,
+                IID) &&
+            RISCVVLIW::isShallowDepOK(
+                *OldSU->getInstr(), RISCVVLIW::ShallowDepRole::Consumer,
+                IID))
+          TrialState.MustPrecede[OldIdx][NewIdx] = true;
+        break;
+      case SDep::Order:
+        if (!Dep.isWeak())
+          return false;
         break;
       }
     }
-    if (!HasWAW)
-      continue;
-
-    // MIOld has a WAW dependence on MINew: MINew must follow MIOld.
-    // Determine the highest slot that MIOld might occupy.
-    unsigned OldSchedClass = MIOld->getDesc().getSchedClass();
-    uint8_t OldSlots = getSlotsForIIC(OldSchedClass, IID);
-    if (!OldSlots)
-      continue;
-
-    // Highest slot index that MIOld can use.
-    int MaxOldSlot = 7;
-    while (MaxOldSlot >= 0 && !(OldSlots & (1u << MaxOldSlot)))
-      --MaxOldSlot;
-    if (MaxOldSlot < 0)
-      continue;
-
-    // Check if any slot compatible with MINew has index > MaxOldSlot.
-    uint8_t LaterSlots = NewSlots & ~((1u << (MaxOldSlot + 1)) - 1u);
-    if (!LaterSlots) {
-      LLVM_DEBUG(dbgs() << "WAW slot hazard: "
-                        << MINew->getMF()->getName() << ": "
-                        << *MINew << "  must follow  " << *MIOld
-                        << "  but no later slot available\n");
-      return true; // cannot pack: no slot available after OldSlot
-    }
   }
-  return false;
+
+  SmallVector<MachineInstr *, RISCVVLIW::DandelionSlots> Instrs;
+  for (SUnit *SU : TrialState.SUnits)
+    Instrs.push_back(SU->getInstr());
+  return RISCVVLIW::assignSlots(Instrs, IID, TrialState.MustPrecede,
+                                TrialState.AssignedSlots);
+}
+
+void RISCVPacketizerList::markShallowInternalReads(
+    const PacketDependencyState &State) const {
+  if (!State.ShallowConsumer)
+    return;
+
+  MachineInstr *Consumer = State.ShallowConsumer->getInstr();
+  for (Register Reg : State.ShallowDataRegs) {
+    bool Marked = false;
+    for (MachineOperand &MO : Consumer->operands()) {
+      if (!MO.isReg() || !MO.isUse() || MO.isImplicit() ||
+          MO.getReg() != Reg)
+        continue;
+      MO.setIsInternalRead(true);
+      Marked = true;
+    }
+    assert(Marked && "SDep::Data register is not a consumer operand");
+  }
+}
+
+bool RISCVPacketizerList::commitCandidateToPacketState(SUnit *NewSU) {
+  PacketDependencyState TrialState;
+  if (!buildTrialPacketState(NewSU, TrialState))
+    return false;
+  markShallowInternalReads(TrialState);
+  PacketState = std::move(TrialState);
+  return true;
 }
 
 bool RISCVPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) {
-    // Reject RAW (data) dependencies.
-    for (unsigned i = 0; i < SUJ->Succs.size(); ++i) {
-        if (SUJ->Succs[i].getSUnit() != SUI)
-            continue;
-        SDep::Kind DepType = SUJ->Succs[i].getKind();
-        if (DepType == SDep::Data) {
-            return false;
-        }
-    }
-
-    // Reject WAW dependencies where the later-writing instruction has no
-    // available slot after the earlier-writing instruction's slot range.
-    const InstrItineraryData *IID =
-        MF.getSubtarget().getInstrItineraryData();
-    if (hasWAWHazardWithSlotConstraint(SUI, IID))
-        return false;
-
-    return true;
+  for (const SDep &Dep : SUJ->Succs) {
+    if (Dep.getSUnit() != SUI)
+      continue;
+    if (Dep.getKind() == SDep::Data ||
+        (Dep.getKind() == SDep::Order && !Dep.isWeak()))
+      return false;
+  }
+  return true;
 }
 
 bool RISCVPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) {
-    // TODO: check if the dependence is legal to prune.
-    // we define "shallow dependence" 
-    // A maximum of only two instructions in an instruction packet may have a RAW dependency between them
-    
-    return false;
+  const InstrItineraryData *IID =
+      MF.getSubtarget().getInstrItineraryData();
+  bool HasData = false;
+  for (const SDep &Dep : SUJ->Succs) {
+    if (Dep.getSUnit() != SUI || Dep.getKind() != SDep::Data)
+      continue;
+    HasData = true;
+    if (!Dep.isAssignedRegDep() ||
+        !RISCVVLIW::isShallowDepOK(
+            *SUJ->getInstr(), RISCVVLIW::ShallowDepRole::Producer, IID) ||
+        !RISCVVLIW::isShallowDepOK(
+            *SUI->getInstr(), RISCVVLIW::ShallowDepRole::Consumer, IID))
+      return false;
+    if (PacketState.ShallowProducer &&
+        (PacketState.ShallowProducer != SUJ ||
+         PacketState.ShallowConsumer != SUI))
+      return false;
+  }
+  return HasData;
 }
 
 bool RISCVPacketizerList::shouldAddToPacket(const MachineInstr &MI) {
@@ -433,6 +422,7 @@ bool RISCVPacketizerList::shouldAddToPacket(const MachineInstr &MI) {
 void RISCVPacketizerList::endPacket(MachineBasicBlock *MBB,
                                     MachineBasicBlock::iterator MI) {
   if (CurrentPacketMIs.empty()) {
+    PacketState.clear();
     ResourceTracker->clearResources();
     return;
   }

@@ -38,7 +38,7 @@ entry:
 }
 
 ; MIR-LABEL: name: native_fence
-; MIR: BUNDLE {{{$}}
+; MIR: BUNDLE {{[0-9]+}} {{{$}}
 ; MIR-NEXT: FENCE
 ; MIR-NEXT: }
 
