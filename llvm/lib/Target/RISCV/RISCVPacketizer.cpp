@@ -416,6 +416,7 @@ bool RISCVPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) {
     // TODO: check if the dependence is legal to prune.
     // we define "shallow dependence" 
     // A maximum of only two instructions in an instruction packet may have a RAW dependency between them
+    
     return false;
 }
 
