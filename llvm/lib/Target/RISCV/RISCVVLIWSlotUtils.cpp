@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVVLIWSlotUtils.h"
+#include "RISCV.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -31,18 +32,33 @@ uint8_t RISCVVLIW::getSlotMask(unsigned SchedClass,
 bool RISCVVLIW::isShallowDepOK(const MachineInstr &MI,
                                ShallowDepRole Role,
                                const InstrItineraryData *IID) {
-  (void)Role;
   if (!IID || IID->isEmpty())
     return false;
 
   unsigned SchedClass = MI.getDesc().getSchedClass();
-  if (getSlotMask(SchedClass, IID) != 0xFE)
-    return false;
-  if (IID->getStageLatency(SchedClass) != 1)
+  std::optional<unsigned> DefCycle = IID->getOperandCycle(SchedClass, 0);
+  const bool IsFastALU = getSlotMask(SchedClass, IID) == 0xFE &&
+                         IID->getStageLatency(SchedClass) == 1 && DefCycle &&
+                         *DefCycle == 2;
+  if (Role == ShallowDepRole::Producer || IsFastALU)
+    return IsFastALU;
+
+  // Control-transfer consumers execute only in slot 7.  Identify them by
+  // instruction semantics as well as timing: CSR instructions have the same
+  // slot mask and similar itinerary cycles, but are intentionally excluded.
+  const bool IsControlTransfer =
+      MI.isBranch() || MI.isCall() || MI.isReturn() ||
+      MI.getOpcode() == RISCV::JAL || MI.getOpcode() == RISCV::JALR;
+  if (!IsControlTransfer || getSlotMask(SchedClass, IID) != 0x80 ||
+      IID->getStageLatency(SchedClass) != 1 || !DefCycle || *DefCycle != 2)
     return false;
 
-  std::optional<unsigned> DefCycle = IID->getOperandCycle(SchedClass, 0);
-  return DefCycle && *DefCycle == 2;
+  // Dandelion's Branch/Jump itineraries put the first integer source at
+  // operand cycle index 1.  Requiring the EX1 read cycle keeps this check tied
+  // to the hardware path that receives a same-packet EX2 result.
+  std::optional<unsigned> FirstUseCycle =
+      IID->getOperandCycle(SchedClass, 1);
+  return FirstUseCycle && *FirstUseCycle == 1;
 }
 
 static bool satisfiesAssignedConstraints(

@@ -50,6 +50,50 @@ STATISTIC(NumSlotConstraintSplits, "[riscv-packetizer] Packets split because "
 
 namespace {
 
+/// Return true when \p MO is a source that the emitted instruction really
+/// reads in its integer datapath.  Most such operands are explicit.  The one
+/// fixed-register exception currently materialized by the Dandelion
+/// packetizer is PseudoRET's x1 target.  ABI call arguments, return values and
+/// stack-pointer liveness operands remain ordinary implicit uses and must not
+/// be mistaken for jump targets.
+static bool isShallowHardwareUseOperand(const MachineInstr &MI,
+                                        const MachineOperand &MO,
+                                        Register Reg) {
+  if (!MO.isReg() || !MO.isUse() || MO.isUndef() || MO.getReg() != Reg)
+    return false;
+  if (!MO.isImplicit())
+    return true;
+  return MI.getOpcode() == RISCV::PseudoRET && Reg == RISCV::X1;
+}
+
+static bool hasShallowHardwareUse(const MachineInstr &MI, Register Reg) {
+  for (const MachineOperand &MO : MI.operands())
+    if (isShallowHardwareUseOperand(MI, MO, Reg))
+      return true;
+  return false;
+}
+
+/// PseudoRET expands one-to-one to JALR x0, x1, 0, but its current descriptor
+/// does not expose x1 as an operand.  Materialize that fixed hardware use only
+/// when an earlier instruction in this packetization region defines x1.  This
+/// lets ScheduleDAGInstrs create the real Data edge without globally treating
+/// ABI-only implicit operands as shallow sources.
+static void materializeFixedShallowHardwareUses(
+    MachineFunction &MF, MachineBasicBlock::iterator Begin,
+    MachineBasicBlock::iterator End) {
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  bool HasPriorX1Def = false;
+  for (auto I = Begin; I != End; ++I) {
+    MachineInstr &MI = *I;
+    if (MI.getOpcode() == RISCV::PseudoRET && HasPriorX1Def &&
+        !hasShallowHardwareUse(MI, RISCV::X1))
+      MI.addOperand(MF, MachineOperand::CreateReg(
+                            RISCV::X1, /*isDef=*/false, /*isImp=*/true));
+    if (MI.definesRegister(RISCV::X1, TRI))
+      HasPriorX1Def = true;
+  }
+}
+
 class RISCVPacketizer : public MachineFunctionPass {
 public:
   static char ID;
@@ -191,6 +235,7 @@ void RISCVPacketizerList::PacketizeMIs(MachineBasicBlock *MBB,
                                        MachineBasicBlock::iterator BeginItr,
                                        MachineBasicBlock::iterator EndItr) {
   assert(VLIWScheduler && "VLIW Scheduler is not initialized!");
+  materializeFixedShallowHardwareUses(MF, BeginItr, EndItr);
   VLIWScheduler->startBlock(MBB);
   VLIWScheduler->enterRegion(MBB, BeginItr, EndItr,
                              std::distance(BeginItr, EndItr));
@@ -319,6 +364,7 @@ bool RISCVPacketizerList::buildTrialPacketState(
       switch (Dep.getKind()) {
       case SDep::Data:
         if (DisableShallowDependency || !Dep.isAssignedRegDep() ||
+            !hasShallowHardwareUse(*NewSU->getInstr(), Dep.getReg()) ||
             !RISCVVLIW::isShallowDepOK(
                 *OldSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer, IID) ||
             !RISCVVLIW::isShallowDepOK(
@@ -373,7 +419,7 @@ void RISCVPacketizerList::markShallowInternalReads(
   for (Register Reg : State.ShallowDataRegs) {
     bool Marked = false;
     for (MachineOperand &MO : Consumer->operands()) {
-      if (!MO.isReg() || !MO.isUse() || MO.isImplicit() || MO.getReg() != Reg)
+      if (!isShallowHardwareUseOperand(*Consumer, MO, Reg))
         continue;
       MO.setIsInternalRead(true);
       Marked = true;
@@ -416,6 +462,7 @@ bool RISCVPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) {
       continue;
     HasData = true;
     if (!Dep.isAssignedRegDep() ||
+        !hasShallowHardwareUse(*SUI->getInstr(), Dep.getReg()) ||
         !RISCVVLIW::isShallowDepOK(*SUJ->getInstr(),
                                    RISCVVLIW::ShallowDepRole::Producer, IID) ||
         !RISCVVLIW::isShallowDepOK(*SUI->getInstr(),

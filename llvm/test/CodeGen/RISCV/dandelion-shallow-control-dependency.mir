@@ -1,0 +1,163 @@
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer -verify-machineinstrs -o - %s \
+# RUN:   | FileCheck %s --check-prefix=PACKET
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer,riscv-pack-padding \
+# RUN:   -verify-machineinstrs -o - %s \
+# RUN:   | FileCheck %s --check-prefix=PAD
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -riscv-disable-shallow-dependency -run-pass=riscv-packetizer \
+# RUN:   -verify-machineinstrs -o - %s \
+# RUN:   | FileCheck %s --check-prefix=DISABLED
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer,riscv-pack-padding -o - %s \
+# RUN:   | llc -x=mir -mtriple=riscv32 -mcpu=dandelion \
+# RUN:       -mattr=+m,+f,-d -start-after=riscv-pack-padding \
+# RUN:       -verify-machineinstrs -filetype=asm -o - - \
+# RUN:   | FileCheck %s --check-prefix=ASM
+
+--- |
+  define void @alu_branch() { ret void }
+  define void @lui_branch() { ret void }
+  define void @alu_indirect_jump() { ret void }
+  define void @alu_return() { ret void }
+  define void @csr_is_not_consumer() { ret void }
+  declare void @callee()
+  define void @abi_implicit_is_not_target() { ret void }
+...
+---
+name: alu_branch
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $x10, $x11
+    renamable $x13 = ADDI renamable $x10, 2
+    BEQ renamable $x13, renamable $x11, %bb.1
+
+  bb.1:
+    PseudoRET
+...
+
+# PACKET-LABEL: name: alu_branch
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = ADDI
+# PACKET-NEXT: BEQ internal renamable $x13
+# PAD-LABEL: name: alu_branch
+# PAD: BUNDLE 3640313480,
+# PAD: renamable $x13 = ADDI
+# PAD: BEQ internal renamable $x13
+# DISABLED-LABEL: name: alu_branch
+# DISABLED: BUNDLE {{[0-9]+}},
+# DISABLED-NEXT: renamable $x13 = ADDI
+# DISABLED-NEXT: }
+# DISABLED-NEXT: BUNDLE {{[0-9]+}},
+# DISABLED-NEXT: BEQ renamable $x13
+
+---
+name: lui_branch
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    renamable $x13 = LUI 74565
+    BNE renamable $x13, $x0, %bb.1
+
+  bb.1:
+    PseudoRET
+...
+
+# PACKET-LABEL: name: lui_branch
+# PACKET: renamable $x13 = LUI
+# PACKET-NEXT: BNE internal renamable $x13
+
+---
+name: alu_indirect_jump
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10
+    renamable $x13 = ADDI renamable $x10, 4
+    PseudoBRIND renamable $x13, 0
+...
+
+# PACKET-LABEL: name: alu_indirect_jump
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = ADDI
+# PACKET-NEXT: PseudoBRIND internal renamable $x13, 0
+# PAD-LABEL: name: alu_indirect_jump
+# PAD: renamable $x13 = ADDI
+# PAD: PseudoBRIND internal renamable $x13, 0
+
+---
+name: alu_return
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10
+    $x1 = ADDI renamable $x10, 4
+    PseudoRET
+...
+
+# PACKET-LABEL: name: alu_return
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: $x1 = ADDI
+# PACKET-NEXT: PseudoRET implicit internal $x1
+# PAD-LABEL: name: alu_return
+# PAD: $x1 = ADDI
+# PAD: PseudoRET implicit internal $x1
+# ASM-LABEL: alu_return:
+# ASM: addi ra, a0, 4
+# ASM-NEXT: nop
+# ASM-NEXT: nop
+# ASM-NEXT: nop
+# ASM-NEXT: nop
+# ASM-NEXT: nop
+# ASM-NEXT: ret
+# DISABLED-LABEL: name: alu_return
+# DISABLED: BUNDLE {{[0-9]+}},
+# DISABLED-NEXT: $x1 = ADDI
+# DISABLED-NEXT: }
+# DISABLED-NEXT: BUNDLE {{[0-9]+}},
+# DISABLED-NEXT: PseudoRET implicit $x1
+
+---
+name: csr_is_not_consumer
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10
+    renamable $x13 = ADDI renamable $x10, 1
+    renamable $x14 = CSRRS 768, renamable $x13
+    PseudoRET
+...
+
+# CSR also occupies slot 7 but must never pass the control-consumer semantic
+# check merely because its itinerary timing resembles Branch/Jump.
+# PACKET-LABEL: name: csr_is_not_consumer
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x13 = ADDI
+# PACKET-NEXT: }
+# PACKET-NEXT: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: renamable $x14 = CSRRS 768, renamable $x13
+# PACKET-NOT: CSRRS 768, internal
+
+---
+name: abi_implicit_is_not_target
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x2
+    $x10 = ADDI $x0, 1
+    PseudoTAIL target-flags(riscv-call) @callee, implicit $x2, implicit $x10
+...
+
+# A direct tail's x10 is an ABI argument, not the eventual JALR target.  Its
+# Data edge must not be pruned as a shallow control dependency.
+# PACKET-LABEL: name: abi_implicit_is_not_target
+# PACKET: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: $x10 = ADDI
+# PACKET-NEXT: }
+# PACKET-NEXT: BUNDLE {{[0-9]+}},
+# PACKET-NEXT: PseudoTAIL {{.*}}implicit $x10
+# PACKET-NOT: implicit internal $x10
