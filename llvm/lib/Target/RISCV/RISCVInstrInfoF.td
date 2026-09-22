@@ -569,6 +569,17 @@ multiclass PatFprFpr_m<SDPatternOperator OpNode, RVInstR Inst,
                              Ext.PrimaryTy, Ext.PrimaryVT>;
 }
 
+class PatFprFprRNEFrm<SDPatternOperator OpNode, RVInstRFrm Inst,
+                      DAGOperand RegTy, ValueType vt>
+    : Pat<(OpNode (vt RegTy:$rs1), (vt RegTy:$rs2)), (Inst $rs1, $rs2, FRM_RNE)>;
+multiclass PatFprFprRNEFrm_m<SDPatternOperator OpNode, RVInstRFrm Inst,
+                             ExtInfo Ext> {
+  let Predicates = Ext.Predicates in
+  def Ext.Suffix : PatFprFprRNEFrm<OpNode,
+                                   !cast<RVInstRFrm>(Inst#Ext.Suffix),
+                                   Ext.PrimaryTy, Ext.PrimaryVT>;
+}
+
 class PatFprFprDynFrm<SDPatternOperator OpNode, RVInstRFrm Inst,
                       DAGOperand RegTy, ValueType vt>
     : Pat<(OpNode (vt RegTy:$rs1), (vt RegTy:$rs2)), (Inst $rs1, $rs2, FRM_DYN)>;
@@ -587,10 +598,14 @@ multiclass PatFprFprDynFrm_m<SDPatternOperator OpNode, RVInstRFrm Inst,
 
 /// Float arithmetic operations
 foreach Ext = FExts in {
-  defm : PatFprFprDynFrm_m<any_fadd, FADD_S, Ext>;
-  defm : PatFprFprDynFrm_m<any_fsub, FSUB_S, Ext>;
-  defm : PatFprFprDynFrm_m<any_fmul, FMUL_S, Ext>;
-  defm : PatFprFprDynFrm_m<any_fdiv, FDIV_S, Ext>;
+  defm : PatFprFprRNEFrm_m<fadd, FADD_S, Ext>;
+  defm : PatFprFprRNEFrm_m<fsub, FSUB_S, Ext>;
+  defm : PatFprFprRNEFrm_m<fmul, FMUL_S, Ext>;
+  defm : PatFprFprRNEFrm_m<fdiv, FDIV_S, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fadd, FADD_S, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fsub, FSUB_S, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fmul, FMUL_S, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fdiv, FDIV_S, Ext>;
 }
 
 let Predicates = [HasStdExtF] in {

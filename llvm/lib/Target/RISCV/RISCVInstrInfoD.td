@@ -284,10 +284,14 @@ def : Pat<(any_fpextend FPR32INX:$rs1), (FCVT_D_S_IN32X FPR32INX:$rs1, FRM_RNE)>
 /// Float arithmetic operations
 
 foreach Ext = DExts in {
-  defm : PatFprFprDynFrm_m<any_fadd, FADD_D, Ext>;
-  defm : PatFprFprDynFrm_m<any_fsub, FSUB_D, Ext>;
-  defm : PatFprFprDynFrm_m<any_fmul, FMUL_D, Ext>;
-  defm : PatFprFprDynFrm_m<any_fdiv, FDIV_D, Ext>;
+  defm : PatFprFprRNEFrm_m<fadd, FADD_D, Ext>;
+  defm : PatFprFprRNEFrm_m<fsub, FSUB_D, Ext>;
+  defm : PatFprFprRNEFrm_m<fmul, FMUL_D, Ext>;
+  defm : PatFprFprRNEFrm_m<fdiv, FDIV_D, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fadd, FADD_D, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fsub, FSUB_D, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fmul, FMUL_D, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fdiv, FDIV_D, Ext>;
 }
 
 let Predicates = [HasStdExtD] in {

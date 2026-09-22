@@ -289,10 +289,14 @@ def PseudoQuietFLT_H_INX : PseudoQuietFCMP<FPR16INX>;
 /// Float arithmetic operations
 
 foreach Ext = ZfhExts in {
-  defm : PatFprFprDynFrm_m<any_fadd, FADD_H, Ext>;
-  defm : PatFprFprDynFrm_m<any_fsub, FSUB_H, Ext>;
-  defm : PatFprFprDynFrm_m<any_fmul, FMUL_H, Ext>;
-  defm : PatFprFprDynFrm_m<any_fdiv, FDIV_H, Ext>;
+  defm : PatFprFprRNEFrm_m<fadd, FADD_H, Ext>;
+  defm : PatFprFprRNEFrm_m<fsub, FSUB_H, Ext>;
+  defm : PatFprFprRNEFrm_m<fmul, FMUL_H, Ext>;
+  defm : PatFprFprRNEFrm_m<fdiv, FDIV_H, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fadd, FADD_H, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fsub, FSUB_H, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fmul, FMUL_H, Ext>;
+  defm : PatFprFprDynFrm_m<strict_fdiv, FDIV_H, Ext>;
 }
 
 let Predicates = [HasStdExtZfh] in {
