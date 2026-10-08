@@ -67,6 +67,16 @@ private:
 
     bool commitCandidateToPacketState(SUnit *NewSU);
 
+    /// Plan packets from the sinks of the remaining DAG, then emit them in
+    /// execution order.  This is kept separate from the original linear
+    /// packetizer so the latter remains available as a baseline.
+    void packetizeSDARegion(MachineBasicBlock *MBB,
+                            MachineBasicBlock::iterator BeginItr,
+                            MachineBasicBlock::iterator EndItr);
+
+    bool buildSDAPacketState(ArrayRef<SUnit *> Units,
+                             PacketDependencyState &State);
+
 public:
     RISCVPacketizerList(MachineFunction &MF, MachineLoopInfo &MLI, AAResults *AA);
 
@@ -88,6 +98,10 @@ public:
     void PacketizeMIs(MachineBasicBlock *MBB,
                       MachineBasicBlock::iterator BeginItr,
                       MachineBasicBlock::iterator EndItr);
+
+    void PacketizeMIsSDA(MachineBasicBlock *MBB,
+                         MachineBasicBlock::iterator BeginItr,
+                         MachineBasicBlock::iterator EndItr);
     
     // isLegalToPacketizeTogether - Is it legal to packetize SUI and SUJ
     // together.

@@ -1,0 +1,98 @@
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -riscv-enable-sda-packetizer -run-pass=riscv-packetizer \
+# RUN:   -verify-machineinstrs -o - %s | FileCheck %s --check-prefix=SDA
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer -verify-machineinstrs -o - %s \
+# RUN:   | FileCheck %s --check-prefix=LINEAR
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -riscv-enable-sda-packetizer \
+# RUN:   -run-pass=riscv-packetizer,riscv-pack-padding \
+# RUN:   -verify-machineinstrs -o - %s | FileCheck %s --check-prefix=PAD
+
+--- |
+  define void @two_load_chains() { ret void }
+  define void @two_raw_pairs() { ret void }
+...
+---
+name: two_load_chains
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $x10, $x11, $x12
+    renamable $x13 = LW renamable $x10, 0 :: (load (s32))
+    renamable $x14 = ADD renamable $x13, renamable $x11
+    renamable $x15 = LW renamable $x12, 0 :: (load (s32))
+    renamable $x16 = ADD renamable $x15, renamable $x11
+    renamable $x17 = XOR renamable $x14, renamable $x16
+    BNE renamable $x17, $x0, %bb.1
+
+  bb.1:
+    PseudoRET
+...
+
+# SDA-LABEL: name: two_load_chains
+# SDA: BUNDLE
+# SDA-DAG: renamable $x13 = LW
+# SDA-DAG: renamable $x15 = LW
+# SDA: BUNDLE
+# SDA-DAG: renamable $x14 = ADD
+# SDA-DAG: renamable $x16 = ADD
+# SDA: BUNDLE
+# SDA-NEXT: renamable $x17 = XOR
+# SDA-NEXT: BNE internal
+
+# LINEAR-LABEL: name: two_load_chains
+# LINEAR: BUNDLE
+# LINEAR-NEXT: renamable $x13 = LW
+# LINEAR: BUNDLE
+# LINEAR-NEXT: renamable $x14 = ADD
+# LINEAR-NEXT: renamable $x15 = LW
+# LINEAR: BUNDLE
+# LINEAR-NEXT: renamable $x16 = ADD
+# LINEAR-NEXT: renamable $x17 = XOR
+# LINEAR: BUNDLE
+# LINEAR-NEXT: BNE
+
+# Padding preserves the two load slots and places the branch in slot 7.
+# PAD-LABEL: name: two_load_chains
+# PAD: BUNDLE 3640313480,
+# PAD: renamable $x15 = LW
+# PAD-NEXT: renamable $x13 = LW
+# PAD: BUNDLE 3640313480,
+# PAD: renamable $x16 = ADD
+# PAD-NEXT: renamable $x14 = ADD
+# PAD: BUNDLE 3640313480,
+# PAD-NEXT: $x0 = FEQ_S
+# PAD-NEXT: renamable $x17 = XOR
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: $x0 = ADDI
+# PAD-NEXT: BNE internal renamable $x17
+
+---
+name: two_raw_pairs
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11
+    renamable $x13 = ADDI renamable $x10, 1
+    renamable $x14 = ADD renamable $x13, renamable $x11
+    renamable $x15 = XORI renamable $x10, 7
+    renamable $x16 = SUB renamable $x15, renamable $x11
+    PseudoRET
+...
+
+# The two independent RAW pairs must occupy different packets.  A packet
+# may mark only its own producer-consumer pair as an internal read.
+# SDA-LABEL: name: two_raw_pairs
+# SDA: BUNDLE {{[0-9]+}},
+# SDA-NEXT: renamable $x13 = ADDI
+# SDA-NEXT: }
+# SDA-NEXT: BUNDLE {{[0-9]+}},
+# SDA-NEXT: renamable $x15 = XORI
+# SDA-NEXT: renamable $x16 = SUB internal renamable $x15
+# SDA-NEXT: renamable $x14 = ADD renamable $x13
+# SDA-NOT: internal renamable $x13

@@ -14,6 +14,9 @@
 #include "RISCV.h"
 #include "RISCVSubtarget.h"
 #include "RISCVVLIWBundleUtils.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/DFAPacketizer.h"
@@ -28,7 +31,10 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include <algorithm>
 #include <cassert>
+#include <functional>
+#include <tuple>
 
 using namespace llvm;
 
@@ -37,6 +43,12 @@ using namespace llvm;
 static cl::opt<bool> DisableShallowDependency(
     "riscv-disable-shallow-dependency", cl::Hidden,
     cl::desc("Disable Dandelion intra-packet shallow RAW dependencies"),
+    cl::init(false));
+
+static cl::opt<bool> EnableSDAPacketizer(
+    "riscv-enable-sda-packetizer", cl::Hidden,
+    cl::desc("Schedule Dandelion VLIW packets from the remaining critical "
+             "path's sink"),
     cl::init(false));
 
 STATISTIC(NumShallowDataEdges,
@@ -178,12 +190,271 @@ bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
     while (RE != End && RE->isTerminator())
       ++RE;
     if (RB != RE) {
-      Packetizer.PacketizeMIs(&MB, RB, RE);
+      if (EnableSDAPacketizer)
+        Packetizer.PacketizeMIsSDA(&MB, RB, RE);
+      else
+        Packetizer.PacketizeMIs(&MB, RB, RE);
       Changed = true;
     }
   }
 
   return Changed;
+}
+
+// The original packetizer examines a candidate only after the existing packet
+// members in program order.  SDA deliberately visits a consumer before its
+// producer, so derive all pair constraints from the DAG rather than from the
+// order in which candidates were selected.
+bool RISCVPacketizerList::buildSDAPacketState(
+    ArrayRef<SUnit *> Units, PacketDependencyState &State) {
+  State.clear();
+  if (Units.empty() || Units.size() > RISCVVLIW::DandelionSlots)
+    return false;
+
+  State.SUnits.append(Units.begin(), Units.end());
+  DenseMap<SUnit *, unsigned> Indices;
+  for (unsigned I = 0; I != Units.size(); ++I) {
+    Indices[Units[I]] = I;
+    if (Units.size() > 1 && isSoloInstruction(*Units[I]->getInstr()))
+      return false;
+  }
+
+  const InstrItineraryData *IID = MF.getSubtarget().getInstrItineraryData();
+  for (unsigned I = 0; I != Units.size(); ++I) {
+    SUnit *Producer = Units[I];
+    for (const SDep &Dep : Producer->Succs) {
+      auto It = Indices.find(Dep.getSUnit());
+      if (It == Indices.end())
+        continue;
+      unsigned J = It->second;
+      SUnit *Consumer = Units[J];
+
+      switch (Dep.getKind()) {
+      case SDep::Data:
+        if (DisableShallowDependency || !Dep.isAssignedRegDep() ||
+            !hasShallowHardwareUse(*Consumer->getInstr(), Dep.getReg()) ||
+            !RISCVVLIW::isShallowDepOK(
+                *Producer->getInstr(), RISCVVLIW::ShallowDepRole::Producer,
+                IID) ||
+            !RISCVVLIW::isShallowDepOK(
+                *Consumer->getInstr(), RISCVVLIW::ShallowDepRole::Consumer,
+                IID))
+          return false;
+        if (State.ShallowProducer &&
+            (State.ShallowProducer != Producer ||
+             State.ShallowConsumer != Consumer))
+          return false;
+        State.ShallowProducer = Producer;
+        State.ShallowConsumer = Consumer;
+        State.ShallowDataRegs.push_back(Dep.getReg());
+        State.MustPrecede[I][J] = true;
+        break;
+      case SDep::Output:
+        State.MustPrecede[I][J] = true;
+        break;
+      case SDep::Anti:
+        if (RISCVVLIW::isShallowDepOK(
+                *Consumer->getInstr(), RISCVVLIW::ShallowDepRole::Producer,
+                IID) &&
+            RISCVVLIW::isShallowDepOK(
+                *Producer->getInstr(), RISCVVLIW::ShallowDepRole::Consumer,
+                IID))
+          State.MustPrecede[I][J] = true;
+        break;
+      case SDep::Order:
+        if (!Dep.isWeak())
+          return false;
+        break;
+      }
+    }
+  }
+
+  ResourceTracker->clearResources();
+  SmallVector<MachineInstr *, RISCVVLIW::DandelionSlots> Instrs;
+  for (SUnit *SU : Units) {
+    MachineInstr *MI = SU->getInstr();
+    if (!ResourceTracker->canReserveResources(*MI))
+      return false;
+    ResourceTracker->reserveResources(*MI);
+    Instrs.push_back(MI);
+  }
+  return RISCVVLIW::assignSlots(Instrs, IID, State.MustPrecede,
+                                State.AssignedSlots);
+}
+
+void RISCVPacketizerList::packetizeSDARegion(
+    MachineBasicBlock *MBB, MachineBasicBlock::iterator BeginItr,
+    MachineBasicBlock::iterator EndItr) {
+  materializeFixedShallowHardwareUses(MF, BeginItr, EndItr);
+  VLIWScheduler->startBlock(MBB);
+  VLIWScheduler->enterRegion(MBB, BeginItr, EndItr,
+                             std::distance(BeginItr, EndItr));
+  VLIWScheduler->schedule();
+
+  SmallVector<SUnit *, 32> RegionUnits;
+  DenseMap<MachineInstr *, SUnit *> UnitForMI;
+  for (SUnit &SU : VLIWScheduler->SUnits) {
+    RegionUnits.push_back(&SU);
+    UnitForMI[SU.getInstr()] = &SU;
+  }
+  MachineInstr *Terminator = std::prev(EndItr)->isTerminator()
+                                 ? &*std::prev(EndItr)
+                                 : nullptr;
+  SmallPtrSet<SUnit *, 32> Scheduled;
+  SmallPtrSet<SUnit *, 8> InPacket;
+
+  struct PlannedPacket {
+    SmallVector<SUnit *, RISCVVLIW::DandelionSlots> Units;
+    PacketDependencyState State;
+    SmallVector<SUnit *, RISCVVLIW::DandelionSlots> EmissionUnits;
+    SmallVector<int, RISCVVLIW::DandelionSlots> EmissionSlots;
+  };
+  SmallVector<PlannedPacket, 16> PacketStack;
+
+  while (Scheduled.size() < RegionUnits.size()) {
+    // Recompute the longest path in the remaining graph after every packet.
+    // DAG edges point from earlier instructions to later ones; a sink with the
+    // greatest depth is the last instruction on a remaining critical path.
+    DenseMap<SUnit *, unsigned> Depth;
+    std::function<unsigned(SUnit *)> GetDepth = [&](SUnit *SU) -> unsigned {
+      auto It = Depth.find(SU);
+      if (It != Depth.end())
+        return It->second;
+      unsigned Value = std::max(1u, static_cast<unsigned>(SU->Latency));
+      for (const SDep &Pred : SU->Preds) {
+        SUnit *PSU = Pred.getSUnit();
+        if (PSU->isBoundaryNode() || Scheduled.contains(PSU))
+          continue;
+        Value = std::max(Value, GetDepth(PSU) +
+                                    std::max(1u, Pred.getLatency()));
+      }
+      Depth[SU] = Value;
+      return Value;
+    };
+
+    auto IsReady = [&](SUnit *SU) {
+      for (const SDep &Succ : SU->Succs) {
+        SUnit *Next = Succ.getSUnit();
+        if (!Next->isBoundaryNode() && !Scheduled.contains(Next) &&
+            !InPacket.contains(Next))
+          return false;
+      }
+      return true;
+    };
+
+    PlannedPacket Packet;
+    SUnit *Seed = nullptr;
+    if (Terminator && !Scheduled.contains(UnitForMI.lookup(Terminator)))
+      Seed = UnitForMI.lookup(Terminator);
+    if (!Seed) {
+      for (SUnit *SU : RegionUnits) {
+        if (Scheduled.contains(SU) || !IsReady(SU))
+          continue;
+        if (!Seed || std::make_tuple(GetDepth(SU), SU->NodeNum) >
+                         std::make_tuple(GetDepth(Seed), Seed->NodeNum))
+          Seed = SU;
+      }
+    }
+    if (!Seed)
+      report_fatal_error("Dandelion SDA scheduler has no remaining DAG sink");
+    Packet.Units.push_back(Seed);
+    if (!buildSDAPacketState(Packet.Units, Packet.State))
+      report_fatal_error("Dandelion SDA seed has no legal packet slot");
+    InPacket.insert(Seed);
+
+    while (Packet.Units.size() < RISCVVLIW::DandelionSlots) {
+      SUnit *Best = nullptr;
+      PacketDependencyState BestState;
+      for (SUnit *SU : RegionUnits) {
+        if (Scheduled.contains(SU) || InPacket.contains(SU) || !IsReady(SU))
+          continue;
+        SmallVector<SUnit *, RISCVVLIW::DandelionSlots> Trial(Packet.Units);
+        Trial.push_back(SU);
+        PacketDependencyState TrialState;
+        if (!buildSDAPacketState(Trial, TrialState))
+          continue;
+        if (!Best || std::make_tuple(GetDepth(SU), SU->Preds.size(),
+                                     SU->NodeNum) >
+                         std::make_tuple(GetDepth(Best), Best->Preds.size(),
+                                         Best->NodeNum)) {
+          Best = SU;
+          BestState = std::move(TrialState);
+        }
+      }
+      if (!Best)
+        break;
+      Packet.Units.push_back(Best);
+      Packet.State = std::move(BestState);
+      InPacket.insert(Best);
+    }
+
+    for (SUnit *SU : Packet.Units)
+      Scheduled.insert(SU);
+    InPacket.clear();
+    PacketStack.push_back(std::move(Packet));
+  }
+
+  // Build the final machine order before creating any BUNDLE: each packet is
+  // contiguous, and its members are in physical-slot order so WAW and the
+  // bundle's register summary use the same final definition.
+  for (PlannedPacket &Packet : llvm::reverse(PacketStack)) {
+    SmallVector<unsigned, RISCVVLIW::DandelionSlots> Order;
+    for (unsigned I = 0; I != Packet.Units.size(); ++I)
+      Order.push_back(I);
+    llvm::sort(Order, [&](unsigned A, unsigned B) {
+      return Packet.State.AssignedSlots[A] < Packet.State.AssignedSlots[B];
+    });
+    for (unsigned I : Order) {
+      Packet.EmissionUnits.push_back(Packet.Units[I]);
+      Packet.EmissionSlots.push_back(Packet.State.AssignedSlots[I]);
+      MBB->splice(EndItr, MBB, Packet.Units[I]->getInstr()->getIterator());
+    }
+  }
+
+  for (PlannedPacket &Packet : llvm::reverse(PacketStack)) {
+    markShallowInternalReads(Packet.State);
+    NumShallowDataEdges += Packet.State.ShallowDataRegs.size();
+    if (Packet.State.ShallowProducer)
+      ++NumShallowEndpointPairs;
+    MachineInstr *First = Packet.EmissionUnits.front()->getInstr();
+    MachineInstr *Last = Packet.EmissionUnits.back()->getInstr();
+    RISCVVLIW::finalizeRISCVBundle(
+        *MBB, First->getIterator(), std::next(Last->getIterator()),
+        Packet.EmissionSlots);
+  }
+
+  VLIWScheduler->exitRegion();
+  VLIWScheduler->finishBlock();
+}
+
+void RISCVPacketizerList::PacketizeMIsSDA(
+    MachineBasicBlock *MBB, MachineBasicBlock::iterator BeginItr,
+    MachineBasicBlock::iterator EndItr) {
+  // The DAG may only move instructions within a region.  Keep debug and
+  // non-issuing instructions in place, and never move an instruction across a
+  // position directive, inline assembly, or a serialized fence.
+  SmallVector<MachineInstr *, 64> Original;
+  for (auto It = BeginItr; It != EndItr; ++It)
+    Original.push_back(&*It);
+  for (unsigned I = 0; I < Original.size();) {
+    MachineInstr &MI = *Original[I];
+    if (MI.isDebugInstr() || MI.isImplicitDef() ||
+        shouldNotEnterBundle(MI)) {
+      ++I;
+      continue;
+    }
+    unsigned Begin = I;
+    do {
+      ++I;
+    } while (I < Original.size() && !Original[I - 1]->isTerminator() &&
+             !Original[I]->isDebugInstr() &&
+             !Original[I]->isImplicitDef() &&
+             !shouldNotEnterBundle(*Original[I]) &&
+             !isSoloInstruction(*Original[I]) &&
+             !isSoloInstruction(*Original[I - 1]));
+    auto End = I == Original.size() ? EndItr : Original[I]->getIterator();
+    packetizeSDARegion(MBB, Original[Begin]->getIterator(), End);
+  }
 }
 
 // Initialize packetizer flags.
