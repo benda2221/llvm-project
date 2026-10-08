@@ -62,6 +62,17 @@ static MachineInstr *getEffectiveBranchMI(MachineInstr &MI) {
   return nullptr;
 }
 
+// Only direct branches to a MachineBasicBlock have a displacement that this
+// pass can check. Calls and indirect transfers are handled by their own
+// lowering/relocation paths.
+static MachineBasicBlock *getDirectBranchDest(const MachineInstr &MI) {
+  if (!MI.isBranch() || MI.getNumExplicitOperands() == 0)
+    return nullptr;
+  const MachineOperand &Dest =
+      MI.getOperand(MI.getNumExplicitOperands() - 1);
+  return Dest.isMBB() ? Dest.getMBB() : nullptr;
+}
+
 STATISTIC(RISCVRelayoutNumSplit, "[riscv-relayout] Number of basic blocks split");
 STATISTIC(RISCVRelayoutNumConditionalRelaxed, "[riscv-relayout] Number of conditional branches relaxed");
 STATISTIC(RISCVRelayoutNumUnconditionalRelaxed, "[riscv-relayout] Number of unconditional branches relaxed");
@@ -153,6 +164,7 @@ class RISCVRelayoutImpl {
                                  MachineBasicBlock *&TBB,
                                  MachineBasicBlock *&FBB,
                                  SmallVectorImpl<MachineOperand> &Cond);
+  void removeBranchMI(MachineInstr &MI, unsigned &BBSize);
   unsigned bundleAwareRemoveBranch(MachineBasicBlock &MBB,
                                     unsigned &BBSize);
 
@@ -214,9 +226,9 @@ void RISCVRelayoutImpl::verify() {
   }
 
   for (MachineBasicBlock &MBB : *MF) {
-    // Use getFirstInstrTerminator() so that branches inside BUNDLE containers
-    // are visible; skip BUNDLE headers and debug instructions.
-    for (auto J = MBB.getFirstInstrTerminator(); J != MBB.instr_end(); ++J) {
+    // Padding NOPs separate terminators in different VLIW bundles. Check all
+    // direct branch members instead of relying on a contiguous terminator tail.
+    for (auto J = MBB.instr_begin(); J != MBB.instr_end(); ++J) {
       if (J->isBundle() || J->isDebugInstr())
         continue;
       MachineInstr &MI = *J;
@@ -224,7 +236,9 @@ void RISCVRelayoutImpl::verify() {
         continue;
       if (MI.getOpcode() == TargetOpcode::FAULTING_OP)
         continue;
-      MachineBasicBlock *DestBB = TII->getBranchDestBlock(MI);
+      MachineBasicBlock *DestBB = getDirectBranchDest(MI);
+      if (!DestBB)
+        continue;
       assert(isBlockInRange(MI, *DestBB) ||
              RelaxedUnconditionals.contains({&MBB, DestBB}));
     }
@@ -295,7 +309,6 @@ unsigned RISCVRelayoutImpl::getInstrOffset(const MachineInstr &MI) const {
 
   // If MI is a bundle member, resolve to the enclosing BUNDLE header so the
   // block-level iterator can find it (bundle members are invisible to it).
-  // The PC of any instruction inside a VLIW packet equals the packet's start.
   const MachineInstr *Target = &MI;
   if (Target->isInsideBundle()) {
     auto It = Target->getIterator();
@@ -303,9 +316,18 @@ unsigned RISCVRelayoutImpl::getInstrOffset(const MachineInstr &MI) const {
       --It;
     Target = &*It;
   }
-  for (MachineBasicBlock::const_iterator I = MBB->begin(); &*I != Target; ++I) {
-    assert(I != MBB->end() && "Didn't find MI in its own basic block?");
+  MachineBasicBlock::const_iterator I = MBB->begin();
+  for (; I != MBB->end() && &*I != Target; ++I)
     Offset += TII->getInstSizeInBytes(*I);
+  assert(I != MBB->end() && "Didn't find MI in its own basic block?");
+
+  // RISC-V branch displacements are relative to the instruction's own PC,
+  // which is slot 7 for a branch inside a Dandelion packet.
+  if (Target != &MI) {
+    auto Member = std::next(Target->getIterator());
+    for (; Member != MBB->instr_end() && &*Member != &MI; ++Member)
+      Offset += TII->getInstSizeInBytes(*Member);
+    assert(Member != MBB->instr_end() && "Didn't find MI in its own bundle?");
   }
 
   return Offset;
@@ -355,9 +377,8 @@ RISCVRelayoutImpl::createNewBlockAfter(MachineBasicBlock &OrigMBB,
   return NewBB;
 }
 
-/// Split the basic block containing MI into two blocks, which are joined by
-/// an unconditional branch.  Update data structures and renumber blocks to
-/// account for this change and returns the newly created block.
+/// Split the basic block containing MI into two blocks. The first block falls
+/// through to the new block, which is inserted immediately after it.
 MachineBasicBlock *
 RISCVRelayoutImpl::splitBlockBeforeInstr(MachineInstr &MI,
                                         MachineBasicBlock *DestBB) {
@@ -376,12 +397,6 @@ RISCVRelayoutImpl::splitBlockBeforeInstr(MachineInstr &MI,
   // Splice the instructions starting with MI over to NewBB.
   NewBB->splice(NewBB->end(), OrigBB, MI.getIterator(), OrigBB->end());
 
-  // Add an unconditional branch from OrigBB to NewBB.
-  // Note the new unconditional branch is not being recorded.
-  // There doesn't seem to be meaningful DebugInfo available; this doesn't
-  // correspond to anything in the source.
-  TII->insertUnconditionalBranch(*OrigBB, NewBB, DebugLoc());
-
   // Insert an entry into BlockInfo to align it properly with the block numbers.
   BlockInfo.insert(BlockInfo.begin() + NewBB->getNumber(), BasicBlockInfo());
 
@@ -389,15 +404,20 @@ RISCVRelayoutImpl::splitBlockBeforeInstr(MachineInstr &MI,
   OrigBB->addSuccessor(NewBB);
   OrigBB->addSuccessor(DestBB);
 
-  // Cleanup potential unconditional branch to successor block.
-  // Note that updateTerminator may change the size of the blocks.
-  OrigBB->updateTerminator(NewBB);
+  // The retained conditional branch still targets DestBB. Remove that edge
+  // from NewBB unless its moved instructions also target DestBB or DestBB is
+  // the new block's fall-through successor.
+  bool NewBBBranchesToDest = false;
+  for (MachineInstr &NewMI : NewBB->instrs())
+    NewBBBranchesToDest |= getDirectBranchDest(NewMI) == DestBB;
+  auto NextBB = std::next(NewBB->getIterator());
+  if (!NewBBBranchesToDest &&
+      (NextBB == MF->end() || &*NextBB != DestBB) &&
+      NewBB->isSuccessor(DestBB))
+    NewBB->removeSuccessor(DestBB);
 
   // Figure out how large the OrigBB is.  As the first half of the original
-  // block, it cannot contain a tablejump.  The size includes
-  // the new jump we added.  (It should be possible to do this without
-  // recounting everything, but it's very confusing, and this is rarely
-  // executed.)
+  // block, it cannot contain a tablejump.
   BlockInfo[OrigBB->getNumber()].Size = computeBlockSize(*OrigBB);
 
   // Figure out how large the NewMBB is. As the second half of the original
@@ -767,7 +787,6 @@ bool RISCVRelayoutImpl::fixupConditionalBranch(MachineInstr &MI) {
 
 bool RISCVRelayoutImpl::fixupUnconditionalBranch(MachineInstr &MI) {
   MachineBasicBlock *MBB = MI.getParent();
-  unsigned OldBrSize = TII->getInstSizeInBytes(MI);
   MachineBasicBlock *DestBB = TII->getBranchDestBlock(MI);
 
   int64_t DestOffset = BlockInfo[DestBB->getNumber()].Offset;
@@ -778,7 +797,8 @@ bool RISCVRelayoutImpl::fixupUnconditionalBranch(MachineInstr &MI) {
                           ? TM->getMaxCodeSize()
                           : DestOffset - SrcOffset));
 
-  BlockInfo[MBB->getNumber()].Size -= OldBrSize;
+  DebugLoc DL = MI.getDebugLoc();
+  removeBranchMI(MI, BlockInfo[MBB->getNumber()].Size);
 
   MachineBasicBlock *BranchBB = MBB;
 
@@ -799,9 +819,6 @@ bool RISCVRelayoutImpl::fixupUnconditionalBranch(MachineInstr &MI) {
     if (TrampolineInsertionPoint == MBB)
       TrampolineInsertionPoint = BranchBB;
   }
-
-  DebugLoc DL = MI.getDebugLoc();
-  MI.eraseFromParent();
 
   // Create the optional restore block and, initially, place it at the end of
   // function. That block will be placed later if it's used; otherwise, it will
@@ -892,26 +909,26 @@ bool RISCVRelayoutImpl::fixupUnconditionalBranch(MachineInstr &MI) {
   return true;
 }
 
-// Bundle-aware replacement for TII->analyzeBranch.
-// Uses getFirstInstrTerminator() to penetrate BUNDLE containers and examine
-// the actual branch instructions inside them.
+// Bundle-aware replacement for TII->analyzeBranch. VLIW padding can separate
+// the conditional and unconditional terminators with NOPs.
 bool RISCVRelayoutImpl::bundleAwareAnalyzeBranch(
     MachineBasicBlock &MBB, MachineBasicBlock *&TBB, MachineBasicBlock *&FBB,
     SmallVectorImpl<MachineOperand> &Cond) {
   TBB = FBB = nullptr;
   Cond.clear();
 
-  // Collect actual branch instructions via block-level terminator scan.
-  // For each block-level terminator (BUNDLE or standalone), getEffectiveBranchMI
-  // extracts the real branch instruction; non-branch terminators are skipped.
+  // Inspect every bundle in the block; a terminator-only tail omits a
+  // conditional branch when a later bundle ends in an unconditional branch.
   SmallVector<MachineInstr *, 2> Branches;
-  for (auto J = MBB.getFirstTerminator(), E = MBB.end(); J != E; ++J) {
+  for (auto J = MBB.begin(), E = MBB.end(); J != E; ++J) {
     MachineInstr *BrMI = getEffectiveBranchMI(*J);
     if (!BrMI)
       continue;
     if (BrMI->isPreISelOpcode())
       return true;
     if (BrMI->getDesc().isIndirectBranch())
+      return true;
+    if (!getDirectBranchDest(*BrMI))
       return true;
     Branches.push_back(BrMI);
     if (Branches.size() > 2)
@@ -953,60 +970,61 @@ bool RISCVRelayoutImpl::bundleAwareAnalyzeBranch(
   return true;
 }
 
-// Bundle-aware replacement for TII->removeBranch.
-// Walks backward with instr_iterator, erasing branch members from their
-// bundles (or standalone branches directly).  Updates BBSize to reflect the
-// removed bytes so BlockInfo stays consistent.
-// After erasing a branch from a VLIW bundle:
-//   - if all remaining members are NOPs → delete the entire bundle
-//   - otherwise → insert an ADDI NOP to restore the 8-slot count
+// Remove one direct branch while preserving the width of a bundle that also
+// contains useful instructions. A branch-only packet can be dropped entirely.
+void RISCVRelayoutImpl::removeBranchMI(MachineInstr &MI, unsigned &BBSize) {
+  MachineBasicBlock &MBB = *MI.getParent();
+  MachineInstr *BundleHdr = nullptr;
+  if (MI.isInsideBundle()) {
+    auto It = MI.getIterator();
+    while (It->isInsideBundle())
+      --It;
+    BundleHdr = &*It;
+  }
+
+  BBSize -= TII->getInstSizeInBytes(MI);
+  if (!BundleHdr) {
+    MI.eraseFromParent();
+    return;
+  }
+  MI.eraseFromBundle();
+
+  SmallVector<MachineInstr *, DandelionSlotsRL> Members;
+  bool AllNop = true;
+  for (auto It = std::next(BundleHdr->getIterator());
+       It != MBB.instr_end() && It->isInsideBundle(); ++It) {
+    Members.push_back(&*It);
+    AllNop &= isNopMI(*It);
+  }
+  if (AllNop) {
+    for (MachineInstr *Member : Members)
+      BBSize -= TII->getInstSizeInBytes(*Member);
+    BundleHdr->eraseFromParent();
+    return;
+  }
+
+  // The branch occupied slot 7. Restore that slot after the remaining seven
+  // members, retaining the packet's original byte length.
+  auto InsertPt = std::next(Members.back()->getIterator());
+  BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
+      .addDef(RISCV::X0)
+      .addReg(RISCV::X0)
+      .addImm(0)
+      ->bundleWithPred();
+  BBSize += 4;
+}
+
+// Inspect all bundles so padding between branch packets cannot hide an
+// earlier conditional branch.
 unsigned RISCVRelayoutImpl::bundleAwareRemoveBranch(MachineBasicBlock &MBB,
                                                      unsigned &BBSize) {
   unsigned Count = 0;
-  // Forward scan over block-level terminators; getEffectiveBranchMI extracts
-  // the real branch from each BUNDLE (or standalone instruction).
-  for (auto I = MBB.getFirstTerminator(); I != MBB.end(); ) {
+  for (auto I = MBB.begin(); I != MBB.end();) {
     auto Next = std::next(I);
     if (MachineInstr *BrMI = getEffectiveBranchMI(*I)) {
-      // Save the owning bundle header before erasing.
-      MachineInstr *BundleHdr = nullptr;
-      if (BrMI->isInsideBundle()) {
-        auto It = BrMI->getIterator();
-        while (It->isInsideBundle())
-          --It;
-        BundleHdr = &*It;
-      }
-
-      BBSize -= TII->getInstSizeInBytes(*BrMI); // -4
-      BrMI->eraseFromBundle();
-      ++Count;
-
-      // Post-removal bundle cleanup (VLIW-specific).
-      if (BundleHdr && RII && IID && !IID->isEmpty()) {
-        SmallVector<MachineInstr *, DandelionSlotsRL> Members;
-        bool AllNop = true;
-        for (auto Mit = std::next(BundleHdr->getIterator());
-             Mit != MBB.instr_end() && Mit->isInsideBundle(); ++Mit) {
-          Members.push_back(&*Mit);
-          if (!isNopMI(*Mit))
-            AllNop = false;
-        }
-
-        if (AllNop) {
-          // All remaining slots are NOPs → delete the entire bundle.
-          // eraseFromParent() on a BUNDLE header erases the header + all members.
-          BBSize -= (unsigned)(Members.size() * 4);
-          BundleHdr->eraseFromParent();
-        } else {
-          // Real instructions remain → restore SLOT7 with an ADDI NOP.
-          auto InsertPt = std::next(Members.back()->getIterator());
-          BuildMI(MBB, InsertPt, DebugLoc(), RII->get(RISCV::ADDI))
-              .addDef(RISCV::X0)
-              .addReg(RISCV::X0)
-              .addImm(0)
-              ->bundleWithPred();
-          BBSize += 4; // NOP added; net change versus before call = 0
-        }
+      if (getDirectBranchDest(*BrMI)) {
+        removeBranchMI(*BrMI, BBSize);
+        ++Count;
       }
     }
     I = Next;
@@ -1015,96 +1033,68 @@ unsigned RISCVRelayoutImpl::bundleAwareRemoveBranch(MachineBasicBlock &MBB,
 }
 
 bool RISCVRelayoutImpl::relaxBranchInstructions() {
-  bool Changed = false;
-
-  // Relaxing branches involves creating new basic blocks, so re-eval
-  // end() for termination.
+  // A rewrite can add blocks or invalidate bundle iterators. Restart the
+  // function scan with fresh offsets after each one.
   for (MachineBasicBlock &MBB : *MF) {
-    // Empty block?
-    MachineBasicBlock::iterator Last = MBB.getLastNonDebugInstr();
-    if (Last == MBB.end())
-      continue;
-
-    // Expand the unconditional branch first if necessary. If there is a
-    // conditional branch, this will end up changing the branch destination of
-    // it to be over the newly inserted indirect branch block, which may avoid
-    // the need to try expanding the conditional branch first, saving an extra
-    // jump.
-    // Extract the actual branch from the last instruction (may be a BUNDLE).
-    if (MachineInstr *BrMI = getEffectiveBranchMI(*Last)) {
-      if (BrMI->isUnconditionalBranch()) {
-        // Unconditional branch destination might be unanalyzable, assume these
-        // are OK.
-        if (MachineBasicBlock *DestBB = TII->getBranchDestBlock(*BrMI)) {
-          if (!isBlockInRange(*BrMI, *DestBB) && !TII->isTailCall(*BrMI) &&
-              !RelaxedUnconditionals.contains({&MBB, DestBB})) {
-            fixupUnconditionalBranch(*BrMI);
-            ++RISCVRelayoutNumUnconditionalRelaxed;
-            Changed = true;
-          }
-        }
+    // Process unconditional branches first. This can make a far conditional
+    // branch reachable through a nearby trampoline.
+    for (auto J = MBB.instr_begin(); J != MBB.instr_end(); ++J) {
+      if (J->isBundle() || !J->isUnconditionalBranch())
+        continue;
+      MachineBasicBlock *DestBB = getDirectBranchDest(*J);
+      if (DestBB && !isBlockInRange(*J, *DestBB) && !TII->isTailCall(*J) &&
+          !RelaxedUnconditionals.contains({&MBB, DestBB})) {
+        fixupUnconditionalBranch(*J);
+        ++RISCVRelayoutNumUnconditionalRelaxed;
+        adjustBlockOffsets(MF->front());
+        return true;
       }
     }
 
-    // Loop over the conditional branches.
-    // Use getFirstInstrTerminator() so that branches inside BUNDLEs are found.
-    for (auto J = MBB.getFirstInstrTerminator(); J != MBB.instr_end(); ) {
-      auto Next = std::next(J);
-
-      // Skip BUNDLE headers and debug instructions — we want the real branch.
-      if (J->isBundle() || J->isDebugInstr()) { J = Next; continue; }
-      if (!J->isTerminator())                  { J = Next; continue; }
-      if (!J->isConditionalBranch())           { J = Next; continue; }
-
-      MachineInstr &MI = *J;
-
-      if (MI.getOpcode() == TargetOpcode::FAULTING_OP) {
-        // FAULTING_OP's destination is not encoded in the instruction stream
-        // and thus never needs relaxed.
-        J = Next;
+    MachineInstr *FirstCond = nullptr;
+    for (auto J = MBB.instr_begin(); J != MBB.instr_end(); ++J) {
+      if (J->isBundle() || !J->isConditionalBranch() ||
+          J->getOpcode() == TargetOpcode::FAULTING_OP)
         continue;
-      }
+      MachineBasicBlock *DestBB = getDirectBranchDest(*J);
+      if (!DestBB)
+        continue;
+      if (!FirstCond)
+        FirstCond = &*J;
+      if (isBlockInRange(*J, *DestBB))
+        continue;
 
-      MachineBasicBlock *DestBB = TII->getBranchDestBlock(MI);
-      if (!isBlockInRange(MI, *DestBB)) {
-        // Check whether there is a second conditional branch ahead (possibly
-        // inside another bundle).
-        auto NextCond = Next;
+      // A block with multiple conditional branches must be split before
+      // rewriting one of them. Ignore padding NOPs between the branch packets.
+      MachineInstr *SplitMI = nullptr;
+      MachineBasicBlock *RetainedDest = DestBB;
+      if (FirstCond != &*J) {
+        SplitMI = &*J;
+        RetainedDest = getDirectBranchDest(*FirstCond);
+      } else {
+        auto NextCond = std::next(J);
         while (NextCond != MBB.instr_end() &&
-               (NextCond->isDebugInstr() || NextCond->isBundle()))
+               (NextCond->isBundle() || !NextCond->isConditionalBranch()))
           ++NextCond;
-
-        if (NextCond != MBB.instr_end() && NextCond->isConditionalBranch()) {
-          // Multiple conditional branches: split before the bundle (or
-          // instruction) that owns the second conditional branch.
-          MachineInstr *SplitMI = &*NextCond;
-          while (SplitMI->isInsideBundle()) {
-            auto Prev = SplitMI->getIterator();
-            --Prev;
-            SplitMI = &*Prev;
-          }
-          splitBlockBeforeInstr(*SplitMI, DestBB);
-        } else {
-          fixupConditionalBranch(MI);
-          ++RISCVRelayoutNumConditionalRelaxed;
-        }
-
-        Changed = true;
-
-        // This may have modified all of the terminators, so start over.
-        Next = MBB.getFirstInstrTerminator();
+        if (NextCond != MBB.instr_end())
+          SplitMI = &*NextCond;
       }
-      J = Next;
+      if (SplitMI) {
+        while (SplitMI->isInsideBundle()) {
+          auto Prev = SplitMI->getIterator();
+          --Prev;
+          SplitMI = &*Prev;
+        }
+        splitBlockBeforeInstr(*SplitMI, RetainedDest);
+      } else {
+        fixupConditionalBranch(*J);
+        ++RISCVRelayoutNumConditionalRelaxed;
+      }
+      adjustBlockOffsets(MF->front());
+      return true;
     }
   }
-
-  // If we relaxed a branch, we must recompute offsets for *all* basic blocks.
-  // Otherwise, we may underestimate branch distances and fail to relax a branch
-  // that has been pushed out of range.
-  if (Changed)
-    adjustBlockOffsets(MF->front());
-
-  return Changed;
+  return false;
 }
 
 bool RISCVRelayoutImpl::run(MachineFunction &mf) {

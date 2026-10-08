@@ -1,0 +1,1361 @@
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-relayout -verify-machineinstrs -o - %s \
+# RUN:   | FileCheck %s
+# RUN: sed -e 's/tracksRegLiveness: false/tracksRegLiveness: true/' \
+# RUN:   -e 's/PseudoBR %bb.2/BNE $x10, $x0, %bb.2/' %s > %t.mir
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:     -run-pass=riscv-relayout -verify-machineinstrs -o - %t.mir \
+# RUN:   | FileCheck %s --check-prefix=MULTI
+# RUN: sed -e 's/tracksRegLiveness: false/tracksRegLiveness: true/' \
+# RUN:   -e 's/BNE $x10, $x0, %bb.0/BNE $x10, $x0, %bb.2/' \
+# RUN:   -e 's/PseudoBR %bb.2/BNE $x10, $x0, %bb.0/' %s > %t.second.mir
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:     -run-pass=riscv-relayout -verify-machineinstrs -o - %t.second.mir \
+# RUN:   | FileCheck %s --check-prefix=SECOND
+
+# bb.1 ends in two separate branch packets. The 127 padding packets put the
+# BNE packet at byte 4096, but its slot-7 instruction is at byte 4124.
+# ReLayout must inspect the earlier BNE, use its instruction PC, and reverse
+# the condition so the nearby bb.2 is reached by BEQ and bb.0 by PseudoBR.
+# CHECK-LABEL: name: far_branch_packets
+# CHECK: bb.1:
+# CHECK: BEQ $x10, $x0, %bb.2
+# CHECK: PseudoBR %bb.0
+# MULTI-LABEL: name: far_branch_packets
+# MULTI: bb.1:
+# MULTI: BEQ $x10, $x0, %bb.3
+# MULTI: PseudoBR %bb.0
+# MULTI: bb.3:
+# MULTI: successors: %bb.2
+# MULTI: BNE $x10, $x0, %bb.2
+# SECOND-LABEL: name: far_branch_packets
+# SECOND: bb.1:
+# SECOND: BNE $x10, $x0, %bb.2
+# SECOND: bb.3:
+# SECOND: BEQ $x10, $x0, %bb.2
+# SECOND: PseudoBR %bb.0
+
+--- |
+  define void @far_branch_packets() { ret void }
+...
+---
+name: far_branch_packets
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      PseudoBR %bb.1
+    }
+  bb.1:
+    successors: %bb.0, %bb.2
+    liveins: $x10
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      BNE $x10, $x0, %bb.0
+    }
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      PseudoBR %bb.2
+    }
+  bb.2:
+    BUNDLE 3640313480 {
+      $x0 = FEQ_S undef $f0_f, undef $f0_f
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      $x0 = ADDI $x0, 0
+      PseudoRET
+    }
+...
