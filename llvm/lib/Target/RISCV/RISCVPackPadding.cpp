@@ -83,8 +83,8 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
 
   // -------------------------------------------------------------------------
   // Step 1: Collect instructions inside the bundle.
-  //         Debug instructions are tracked separately and re-inserted outside
-  //         the rebuilt bundle so they do not consume hardware slots.
+  //         Debug instructions are tracked separately so they do not consume
+  //         hardware slots when the bundle is rebuilt.
   // -------------------------------------------------------------------------
   SmallVector<MachineInstr *, 8> BundleMembers;
   SmallVector<MachineInstr *, 8> Instrs;
@@ -196,16 +196,29 @@ bool RISCVPackPadding::padBundle(MachineBasicBlock &MBB, MachineInstr &Bundle) {
   }
 
   assert(FirstSet && "No instructions inserted");
+  // A debug instruction after a terminator bundle would violate the machine
+  // block's terminator ordering. Keep such instructions inside the rebuilt
+  // bundle immediately before its slot-7 control transfer; they still do not
+  // consume hardware slots.
+  bool HasTerminator = false;
+  for (MachineInstr *MI : Instrs)
+    HasTerminator |= MI->isTerminator();
+  if (HasTerminator) {
+    assert(SlotInstr[7] && SlotInstr[7]->isTerminator() &&
+           "Dandelion terminator must occupy slot 7");
+    for (MachineInstr *DMI : DebugInstrs)
+      MBB.insert(SlotInstr[7]->getIterator(), DMI);
+  }
+
   static constexpr std::array<int, RISCVVLIW::DandelionSlots>
       CanonicalSlots = {0, 1, 2, 3, 4, 5, 6, 7};
   RISCVVLIW::finalizeRISCVBundle(MBB, FirstInserted, InsertPt,
                                  CanonicalSlots);
 
-  // Re-insert debug instructions after the rebuilt bundle. They should not
-  // consume VLIW slots, but keeping them near the original location preserves
-  // useful debug ordering.
-  for (MachineInstr *DMI : DebugInstrs)
-    MBB.insert(InsertPt, DMI);
+  // For non-terminator packets, keep debug instructions after the bundle.
+  if (!HasTerminator)
+    for (MachineInstr *DMI : DebugInstrs)
+      MBB.insert(InsertPt, DMI);
 
   return true;
 }

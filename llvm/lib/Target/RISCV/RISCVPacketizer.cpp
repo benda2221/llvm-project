@@ -106,6 +106,15 @@ static void materializeFixedShallowHardwareUses(
   }
 }
 
+// The linear packetizer closes a packet after an instruction that occupies
+// slot 7. Keep the same boundary in SDA so instructions cannot move across a
+// call or another slot-7 operation when the ScheduleDAG lacks a clobber edge.
+static bool endsLinearPacket(const MachineInstr &MI,
+                             const InstrItineraryData *IID) {
+  return MI.isTerminator() || MI.isCall() ||
+         RISCVVLIW::getSlotMask(MI.getDesc().getSchedClass(), IID) == 0x80;
+}
+
 class RISCVPacketizer : public MachineFunctionPass {
 public:
   static char ID;
@@ -286,6 +295,22 @@ void RISCVPacketizerList::packetizeSDARegion(
     MachineBasicBlock *MBB, MachineBasicBlock::iterator BeginItr,
     MachineBasicBlock::iterator EndItr) {
   materializeFixedShallowHardwareUses(MF, BeginItr, EndItr);
+
+  // Debug instructions do not issue and must not divide the ScheduleDAG.
+  // Keep each one with the preceding issuing instruction when that
+  // instruction is moved into its final packet. Leading debug instructions
+  // stay before the region.
+  DenseMap<MachineInstr *, SmallVector<MachineInstr *, 2>> DebugAfter;
+  MachineInstr *PreviousIssue = nullptr;
+  for (auto It = BeginItr; It != EndItr; ++It) {
+    if (It->isDebugInstr()) {
+      if (PreviousIssue)
+        DebugAfter[PreviousIssue].push_back(&*It);
+    } else {
+      PreviousIssue = &*It;
+    }
+  }
+
   VLIWScheduler->startBlock(MBB);
   VLIWScheduler->enterRegion(MBB, BeginItr, EndItr,
                              std::distance(BeginItr, EndItr));
@@ -297,9 +322,14 @@ void RISCVPacketizerList::packetizeSDARegion(
     RegionUnits.push_back(&SU);
     UnitForMI[SU.getInstr()] = &SU;
   }
-  MachineInstr *Terminator = std::prev(EndItr)->isTerminator()
-                                 ? &*std::prev(EndItr)
-                                 : nullptr;
+  auto LastIssue = EndItr;
+  while (LastIssue != BeginItr && std::prev(LastIssue)->isDebugInstr())
+    --LastIssue;
+  const InstrItineraryData *IID = MF.getSubtarget().getInstrItineraryData();
+  MachineInstr *PacketEnd =
+      LastIssue != BeginItr && endsLinearPacket(*std::prev(LastIssue), IID)
+          ? &*std::prev(LastIssue)
+          : nullptr;
   SmallPtrSet<SUnit *, 32> Scheduled;
   SmallPtrSet<SUnit *, 8> InPacket;
 
@@ -344,8 +374,8 @@ void RISCVPacketizerList::packetizeSDARegion(
 
     PlannedPacket Packet;
     SUnit *Seed = nullptr;
-    if (Terminator && !Scheduled.contains(UnitForMI.lookup(Terminator)))
-      Seed = UnitForMI.lookup(Terminator);
+    if (PacketEnd && !Scheduled.contains(UnitForMI.lookup(PacketEnd)))
+      Seed = UnitForMI.lookup(PacketEnd);
     if (!Seed) {
       for (SUnit *SU : RegionUnits) {
         if (Scheduled.contains(SU) || !IsReady(SU))
@@ -407,7 +437,12 @@ void RISCVPacketizerList::packetizeSDARegion(
     for (unsigned I : Order) {
       Packet.EmissionUnits.push_back(Packet.Units[I]);
       Packet.EmissionSlots.push_back(Packet.State.AssignedSlots[I]);
-      MBB->splice(EndItr, MBB, Packet.Units[I]->getInstr()->getIterator());
+      MachineInstr *MI = Packet.Units[I]->getInstr();
+      MBB->splice(EndItr, MBB, MI->getIterator());
+      auto DebugIt = DebugAfter.find(MI);
+      if (DebugIt != DebugAfter.end())
+        for (MachineInstr *DMI : DebugIt->second)
+          MBB->splice(EndItr, MBB, DMI->getIterator());
     }
   }
 
@@ -430,28 +465,41 @@ void RISCVPacketizerList::packetizeSDARegion(
 void RISCVPacketizerList::PacketizeMIsSDA(
     MachineBasicBlock *MBB, MachineBasicBlock::iterator BeginItr,
     MachineBasicBlock::iterator EndItr) {
-  // The DAG may only move instructions within a region.  Keep debug and
-  // non-issuing instructions in place, and never move an instruction across a
-  // position directive, inline assembly, or a serialized fence.
+  // The DAG may only move instructions within a region. Debug instructions
+  // are transparent, as in the linear packetizer. Non-issuing implicit defs,
+  // position directives, inline assembly, and serialized fences remain
+  // packet boundaries.
   SmallVector<MachineInstr *, 64> Original;
+  const InstrItineraryData *IID = MF.getSubtarget().getInstrItineraryData();
   for (auto It = BeginItr; It != EndItr; ++It)
     Original.push_back(&*It);
   for (unsigned I = 0; I < Original.size();) {
     MachineInstr &MI = *Original[I];
-    if (MI.isDebugInstr() || MI.isImplicitDef() ||
-        shouldNotEnterBundle(MI)) {
+    if (MI.isImplicitDef() || shouldNotEnterBundle(MI)) {
+      ++I;
+      continue;
+    }
+    if (MI.isDebugInstr()) {
       ++I;
       continue;
     }
     unsigned Begin = I;
-    do {
+    unsigned LastIssue = I;
+    ++I;
+    while (I < Original.size()) {
+      if (shouldNotEnterBundle(*Original[I]))
+        break;
+      if (Original[I]->isDebugInstr()) {
+        ++I;
+        continue;
+      }
+      if (endsLinearPacket(*Original[LastIssue], IID) ||
+          Original[I]->isImplicitDef() || isSoloInstruction(*Original[I]) ||
+          isSoloInstruction(*Original[LastIssue]))
+        break;
+      LastIssue = I;
       ++I;
-    } while (I < Original.size() && !Original[I - 1]->isTerminator() &&
-             !Original[I]->isDebugInstr() &&
-             !Original[I]->isImplicitDef() &&
-             !shouldNotEnterBundle(*Original[I]) &&
-             !isSoloInstruction(*Original[I]) &&
-             !isSoloInstruction(*Original[I - 1]));
+    }
     auto End = I == Original.size() ? EndItr : Original[I]->getIterator();
     packetizeSDARegion(MBB, Original[Begin]->getIterator(), End);
   }

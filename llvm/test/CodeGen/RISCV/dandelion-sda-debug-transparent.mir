@@ -1,0 +1,106 @@
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -riscv-enable-sda-packetizer -run-pass=riscv-packetizer \
+# RUN:   -verify-machineinstrs -o - %s | FileCheck %s --check-prefix=SDA
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -run-pass=riscv-packetizer -verify-machineinstrs -o - %s \
+# RUN:   | FileCheck %s --check-prefix=LINEAR
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -mattr=+m,+f,-d \
+# RUN:   -riscv-enable-sda-packetizer \
+# RUN:   -run-pass=riscv-packetizer,riscv-pack-padding \
+# RUN:   -verify-machineinstrs -o - %s | FileCheck %s --check-prefix=PAD
+
+--- |
+  define void @debug_values() !dbg !5 { ret void }
+  define void @call_boundary() { ret void }
+  declare i32 @callee(i32)
+
+  !llvm.dbg.cu = !{!0}
+  !llvm.module.flags = !{!4}
+  !0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "test", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug)
+  !1 = !DIFile(filename: "test.c", directory: "/")
+  !4 = !{i32 2, !"Debug Info Version", i32 3}
+  !5 = distinct !DISubprogram(name: "debug_values", scope: !1, file: !1, line: 1, type: !6, scopeLine: 1, spFlags: DISPFlagDefinition, unit: !0, retainedNodes: !8)
+  !6 = !DISubroutineType(types: !7)
+  !7 = !{}
+  !8 = !{!9}
+  !9 = !DILocalVariable(name: "value", scope: !5, file: !1, line: 1, type: !10)
+  !10 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+  !11 = !DILocation(line: 1, column: 1, scope: !5)
+...
+---
+name: debug_values
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x11, $x12
+    DBG_VALUE $x10, $noreg, !9, !DIExpression(), debug-location !11
+    $x13 = ADDI $x10, 1, debug-location !11
+    DBG_VALUE $x13, $noreg, !9, !DIExpression(), debug-location !11
+    $x14 = ADDI $x11, 2, debug-location !11
+    DBG_VALUE $x14, $noreg, !9, !DIExpression(), debug-location !11
+    $x15 = ADDI $x12, 3, debug-location !11
+    DBG_VALUE $x15, $noreg, !9, !DIExpression(), debug-location !11
+    PseudoRET
+...
+
+# SDA-LABEL: name: debug_values
+# SDA: DBG_VALUE $x10
+# SDA: BUNDLE
+# SDA: $x15 = ADDI
+# SDA: DBG_VALUE $x15
+# SDA-NOT: BUNDLE
+# SDA: $x14 = ADDI
+# SDA: DBG_VALUE $x14
+# SDA-NOT: BUNDLE
+# SDA: $x13 = ADDI
+# SDA: DBG_VALUE $x13
+# SDA-NOT: BUNDLE
+# SDA: PseudoRET
+
+# LINEAR-LABEL: name: debug_values
+# LINEAR: DBG_VALUE $x10
+# LINEAR: BUNDLE
+# LINEAR: $x13 = ADDI
+# LINEAR: DBG_VALUE $x13
+# LINEAR-NOT: BUNDLE
+# LINEAR: $x14 = ADDI
+# LINEAR: DBG_VALUE $x14
+# LINEAR-NOT: BUNDLE
+# LINEAR: $x15 = ADDI
+# LINEAR: DBG_VALUE $x15
+# LINEAR-NOT: BUNDLE
+# LINEAR: PseudoRET
+
+# PAD-LABEL: name: debug_values
+# PAD: DBG_VALUE $x10
+# PAD: BUNDLE 3640313480,
+# PAD: $x15 = ADDI
+# PAD: $x14 = ADDI
+# PAD: $x13 = ADDI
+# PAD: DBG_VALUE $x15
+# PAD: DBG_VALUE $x14
+# PAD: DBG_VALUE $x13
+# PAD-NEXT: PseudoRET
+
+---
+name: call_boundary
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x1, $x2, $x11, $x12
+    $x18 = ADDI $x1, 0
+    $x8 = ADDI $x12, 0
+    $x9 = ADDI $x11, 0
+    $x10 = ADDI $x11, 0
+    PseudoCALL target-flags(riscv-call) @callee, csr_ilp32f_lp64f, implicit-def dead $x1, implicit killed $x10, implicit-def $x2, implicit-def $x10
+    $x13 = ADDI $x8, 0
+    $x1 = ADDI $x18, 0
+    PseudoRET
+...
+
+# SDA-LABEL: name: call_boundary
+# SDA-DAG: $x8 = ADDI
+# SDA-DAG: $x9 = ADDI
+# SDA: PseudoCALL
+# SDA: BUNDLE
+# SDA: $x13 = ADDI
