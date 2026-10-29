@@ -62,6 +62,17 @@ class DandelionVLIWResourceModel final : public VLIWResourceModel {
     return RISCVVLIW::getSlotMask(MI.getDesc().getSchedClass(), IID) != 0;
   }
 
+  unsigned getIssueSlotCount(const MachineInstr &MI) const {
+    return RISCVVLIW::getPreRAIssueSlotCount(MI);
+  }
+
+  unsigned getPacketIssueSlotCount() const {
+    unsigned Count = 0;
+    for (SUnit *SU : IssuingPacket)
+      Count += getIssueSlotCount(*SU->getInstr());
+    return Count;
+  }
+
 public:
   DandelionVLIWResourceModel(const TargetSubtargetInfo &STI,
                              const TargetSchedModel *SchedModel)
@@ -81,11 +92,9 @@ public:
       return IssuingPacket.empty();
     if (isNonIssuingInstruction(MI))
       return true;
-    // Some pre-RA pseudos, notably PseudoMovAddr, expand into multiple real
-    // instructions after register allocation and consequently have no slot in
-    // the Dandelion itinerary.  Keep them out of tentative packets and model
-    // them as conservative scheduling boundaries.  The post-RA packetizer
-    // will see and place the expanded instructions normally.
+    // Keep an explicit fallback for newly introduced target instructions that
+    // have not been assigned a Dandelion itinerary. All known issuing pre-RA
+    // pseudos are modeled, so they take the normal packet path below.
     if (!hasLegalSlot(MI))
       return IssuingPacket.empty();
     if (isSoloInstruction(MI) && !IssuingPacket.empty())
@@ -111,6 +120,8 @@ public:
         Trial, IID, /*AllowShallowDependencies=*/true, State);
     LLVM_DEBUG(dbgs() << "Dandelion VLIW candidate opcode=" << MI.getOpcode()
                       << " packet-size=" << IssuingPacket.size()
+                      << " issue-slots="
+                      << getPacketIssueSlotCount() + getIssueSlotCount(MI)
                       << " legal=" << Legal << '\n');
     return Legal;
   }
@@ -160,7 +171,11 @@ public:
       report_fatal_error(
           "Dandelion instruction cannot start a legal pre-RA packet");
 
-    ResourcesModel->reserveResources(MI);
+    // The DFA sees one MachineInstr at a time. Reserve it once per real issue
+    // instruction represented by a multi-instruction pre-RA pseudo; the slot
+    // solver above has already proved that all of those atoms fit together.
+    for (unsigned I = 0, E = getIssueSlotCount(MI); I != E; ++I)
+      ResourcesModel->reserveResources(MI);
     if (IsTop)
       IssuingPacket.push_back(SU);
     else

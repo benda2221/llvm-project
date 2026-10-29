@@ -23,7 +23,7 @@
 # VLIW: MI Converging Scheduling VLIW
 # DANDELION: MI Converging Scheduling VLIW
 # DANDELION: Dandelion VLIW candidate
-# DANDELION: Dandelion VLIW candidate opcode={{[0-9]+}} packet-size={{[1-9][0-9]*}} legal=1
+# DANDELION: Dandelion VLIW candidate opcode={{[0-9]+}} packet-size={{[1-9][0-9]*}} issue-slots={{[1-8]}} legal=1
 # DANDELION: Dandelion VLIW cost bonus=
 # DANDELION: Dandelion VLIW packet boundary opcode={{[0-9]+}} direction=top
 

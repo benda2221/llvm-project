@@ -1,0 +1,38 @@
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -run-pass=machine-scheduler \
+# RUN:   -riscv-dandelion-prera-scheduler=dandelion \
+# RUN:   -debug-only=machine-scheduler -o /dev/null %s 2>&1 \
+# RUN:   | FileCheck %s
+# REQUIRES: asserts
+
+# PseudoMovAddr has an ALU itinerary, but its pre-RA footprint contains the
+# two ordered issue slots needed by the eventual LUI+ADDI expansion. Three
+# independent pseudos consume six of the seven ALU-capable slots; a fourth
+# would require eight ALU slots and must start a new packet. None of them is an
+# opaque scheduling boundary.
+# CHECK-NOT: Dandelion VLIW opaque boundary
+# CHECK: Dandelion VLIW candidate opcode={{[0-9]+}} packet-size=2 issue-slots=6 legal=1
+# CHECK: Dandelion VLIW candidate opcode={{[0-9]+}} packet-size=3 issue-slots=8 legal=0
+
+--- |
+  @object0 = external global i8
+  @object1 = external global i8
+  @object2 = external global i8
+  @object3 = external global i8
+  @object4 = external global i8
+
+  define void @composite_pseudo_footprint() {
+    ret void
+  }
+...
+---
+name: composite_pseudo_footprint
+tracksRegLiveness: true
+body: |
+  bb.0:
+    dead %0:gpr = PseudoMovAddr target-flags(riscv-hi) @object0, target-flags(riscv-lo) @object0
+    dead %1:gpr = PseudoMovAddr target-flags(riscv-hi) @object1, target-flags(riscv-lo) @object1
+    dead %2:gpr = PseudoMovAddr target-flags(riscv-hi) @object2, target-flags(riscv-lo) @object2
+    dead %3:gpr = PseudoMovAddr target-flags(riscv-hi) @object3, target-flags(riscv-lo) @object3
+    dead %4:gpr = PseudoMovAddr target-flags(riscv-hi) @object4, target-flags(riscv-lo) @object4
+    PseudoRET
+...

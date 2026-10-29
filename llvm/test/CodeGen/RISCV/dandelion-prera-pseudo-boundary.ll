@@ -6,11 +6,12 @@
 
 @object = external global i32
 
-; PseudoMovAddr has no physical Dandelion itinerary slot before register
-; allocation because it expands into LUI+ADDI afterwards.  It must be treated
-; as an opaque scheduling boundary rather than rejected as an illegal packet.
+; PseudoMovAddr has an ALU itinerary before register allocation and a two-slot
+; footprint matching its later LUI+ADDI expansion. It participates in normal
+; packet scheduling instead of forming an opaque boundary.
 define ptr @address() {
 ; CHECK-LABEL: MI Converging Scheduling VLIW
-; CHECK: Dandelion VLIW opaque boundary opcode=
+; CHECK-NOT: Dandelion VLIW opaque boundary
+; CHECK: Dandelion VLIW candidate opcode={{[0-9]+}} packet-size=0 issue-slots=2 legal=1
   ret ptr @object
 }

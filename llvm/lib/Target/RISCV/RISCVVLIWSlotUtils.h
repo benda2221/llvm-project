@@ -52,6 +52,11 @@ struct PacketLegalityState {
 
 uint8_t getSlotMask(unsigned SchedClass, const InstrItineraryData *IID);
 
+/// Return the number of issue slots occupied after a pre-RA pseudo is
+/// expanded. Most instructions occupy one slot. PseudoMovAddr and
+/// PseudoMovImm each stand for two integer instructions.
+unsigned getPreRAIssueSlotCount(const MachineInstr &MI);
+
 bool isShallowDepOK(const MachineInstr &MI, ShallowDepRole Role,
                     const InstrItineraryData *IID);
 

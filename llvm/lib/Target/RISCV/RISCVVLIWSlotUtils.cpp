@@ -40,6 +40,31 @@ uint8_t RISCVVLIW::getSlotMask(unsigned SchedClass,
   return Mask;
 }
 
+unsigned RISCVVLIW::getPreRAIssueSlotCount(const MachineInstr &MI) {
+  switch (MI.getOpcode()) {
+  default:
+    return 1;
+  case RISCV::PseudoMovAddr:
+  case RISCV::PseudoMovImm:
+    return 2;
+  }
+}
+
+static bool appendPreRAIssueSlotMasks(
+    const MachineInstr &MI, const InstrItineraryData *IID,
+    SmallVectorImpl<uint8_t> &SlotMasks) {
+  uint8_t Mask = RISCVVLIW::getSlotMask(MI.getDesc().getSchedClass(), IID);
+  if (!Mask)
+    return false;
+  SlotMasks.append(RISCVVLIW::getPreRAIssueSlotCount(MI), Mask);
+  return true;
+}
+
+static bool assignSlotMasks(
+    ArrayRef<uint8_t> SlotMasks,
+    const RISCVVLIW::SlotOrderMatrix &MustPrecede,
+    SmallVectorImpl<int> &AssignedSlots);
+
 bool RISCVVLIW::isShallowDepOK(const MachineInstr &MI,
                                ShallowDepRole Role,
                                const InstrItineraryData *IID) {
@@ -98,13 +123,33 @@ bool RISCVVLIW::buildPacketLegalityState(
 
   State.SUnits.append(Units.begin(), Units.end());
   DenseMap<SUnit *, unsigned> Indices;
+  SmallVector<uint8_t, DandelionSlots> SlotMasks;
+  SmallVector<unsigned, DandelionSlots> FirstAtoms;
+  SmallVector<unsigned, DandelionSlots> DefAtoms;
+  SlotOrderMatrix AtomMustPrecede{};
   for (unsigned I = 0; I != Units.size(); ++I)
     Indices[Units[I]] = I;
 
+  // PseudoMovAddr and PseudoMovImm remain single MachineInstrs until after
+  // register allocation, but each expands to two integer instructions. Model
+  // them as two ordered issue atoms here so the pre-RA scheduler neither
+  // treats them as packet boundaries nor under-counts their physical slots.
+  for (SUnit *SU : Units) {
+    if (!SU || !SU->getInstr())
+      return false;
+    unsigned FirstAtom = SlotMasks.size();
+    if (!appendPreRAIssueSlotMasks(*SU->getInstr(), IID, SlotMasks) ||
+        SlotMasks.size() > DandelionSlots)
+      return false;
+    unsigned DefAtom = SlotMasks.size() - 1;
+    FirstAtoms.push_back(FirstAtom);
+    DefAtoms.push_back(DefAtom);
+    for (unsigned Atom = FirstAtom; Atom != DefAtom; ++Atom)
+      AtomMustPrecede[Atom][Atom + 1] = true;
+  }
+
   for (unsigned I = 0; I != Units.size(); ++I) {
     SUnit *Producer = Units[I];
-    if (!Producer || !Producer->getInstr())
-      return false;
     for (const SDep &Dep : Producer->Succs) {
       auto It = Indices.find(Dep.getSUnit());
       if (It == Indices.end())
@@ -129,16 +174,20 @@ bool RISCVVLIW::buildPacketLegalityState(
         State.ShallowConsumer = Consumer;
         State.ShallowDataRegs.push_back(Dep.getReg());
         State.MustPrecede[I][J] = true;
+        AtomMustPrecede[DefAtoms[I]][FirstAtoms[J]] = true;
         break;
       case SDep::Output:
         State.MustPrecede[I][J] = true;
+        AtomMustPrecede[DefAtoms[I]][DefAtoms[J]] = true;
         break;
       case SDep::Anti:
         if (isShallowDepOK(*Consumer->getInstr(),
                            ShallowDepRole::Producer, IID) &&
             isShallowDepOK(*Producer->getInstr(),
-                           ShallowDepRole::Consumer, IID))
+                           ShallowDepRole::Consumer, IID)) {
           State.MustPrecede[I][J] = true;
+          AtomMustPrecede[DefAtoms[I]][FirstAtoms[J]] = true;
+        }
         break;
       case SDep::Order:
         if (!Dep.isWeak())
@@ -148,10 +197,12 @@ bool RISCVVLIW::buildPacketLegalityState(
     }
   }
 
-  SmallVector<MachineInstr *, DandelionSlots> Instrs;
-  for (SUnit *SU : Units)
-    Instrs.push_back(SU->getInstr());
-  return assignSlots(Instrs, IID, State.MustPrecede, State.AssignedSlots);
+  SmallVector<int, DandelionSlots> AtomSlots;
+  if (!assignSlotMasks(SlotMasks, AtomMustPrecede, AtomSlots))
+    return false;
+  for (unsigned DefAtom : DefAtoms)
+    State.AssignedSlots.push_back(AtomSlots[DefAtom]);
+  return true;
 }
 
 void RISCVVLIW::markShallowInternalReads(
@@ -235,11 +286,23 @@ static bool assignSlotsRec(
   return false;
 }
 
+static bool assignSlotMasks(
+    ArrayRef<uint8_t> SlotMasks,
+    const RISCVVLIW::SlotOrderMatrix &MustPrecede,
+    SmallVectorImpl<int> &AssignedSlots) {
+  AssignedSlots.assign(SlotMasks.size(), -1);
+  if (SlotMasks.size() > RISCVVLIW::DandelionSlots)
+    return false;
+  for (uint8_t Mask : SlotMasks)
+    if (!Mask)
+      return false;
+  return assignSlotsRec(SlotMasks, MustPrecede, AssignedSlots, 0);
+}
+
 bool RISCVVLIW::assignSlots(ArrayRef<MachineInstr *> Instrs,
                             const InstrItineraryData *IID,
                             const SlotOrderMatrix &MustPrecede,
                             SmallVectorImpl<int> &AssignedSlots) {
-  AssignedSlots.assign(Instrs.size(), -1);
   if (Instrs.size() > DandelionSlots)
     return false;
 
@@ -252,7 +315,7 @@ bool RISCVVLIW::assignSlots(ArrayRef<MachineInstr *> Instrs,
     SlotMasks.push_back(Mask);
   }
 
-  return assignSlotsRec(SlotMasks, MustPrecede, AssignedSlots, 0);
+  return assignSlotMasks(SlotMasks, MustPrecede, AssignedSlots);
 }
 
 bool RISCVVLIW::assignSlots(ArrayRef<MachineInstr *> Instrs,
