@@ -58,6 +58,10 @@ class DandelionVLIWResourceModel final : public VLIWResourceModel {
     return RISCVVLIW::getSlotMask(MI.getDesc().getSchedClass(), IID) == 0x80;
   }
 
+  bool hasLegalSlot(const MachineInstr &MI) const {
+    return RISCVVLIW::getSlotMask(MI.getDesc().getSchedClass(), IID) != 0;
+  }
+
 public:
   DandelionVLIWResourceModel(const TargetSubtargetInfo &STI,
                              const TargetSchedModel *SchedModel)
@@ -77,6 +81,13 @@ public:
       return IssuingPacket.empty();
     if (isNonIssuingInstruction(MI))
       return true;
+    // Some pre-RA pseudos, notably PseudoMovAddr, expand into multiple real
+    // instructions after register allocation and consequently have no slot in
+    // the Dandelion itinerary.  Keep them out of tentative packets and model
+    // them as conservative scheduling boundaries.  The post-RA packetizer
+    // will see and place the expanded instructions normally.
+    if (!hasLegalSlot(MI))
+      return IssuingPacket.empty();
     if (isSoloInstruction(MI) && !IssuingPacket.empty())
       return false;
     if (IsTop && !IssuingPacket.empty() &&
@@ -126,6 +137,18 @@ public:
     if (isNonIssuingInstruction(MI)) {
       Packet.push_back(SU);
       return false;
+    }
+    if (!hasLegalSlot(MI)) {
+      bool StartNewCycle = !IssuingPacket.empty();
+      if (StartNewCycle) {
+        reset();
+        ++TotalPackets;
+      }
+      LLVM_DEBUG(dbgs() << "Dandelion VLIW opaque boundary opcode="
+                        << MI.getOpcode() << " direction="
+                        << (IsTop ? "top" : "bottom") << '\n');
+      reset();
+      return true;
     }
 
     bool StartNewCycle = !isResourceAvailable(SU, IsTop);
