@@ -20,6 +20,9 @@ class ScheduleDAGMILive;
 ScheduleDAGMILive *
 createRISCVVLIWMachineScheduler(MachineSchedContext *Context);
 
+ScheduleDAGMILive *
+createRISCVDandelionMachineScheduler(MachineSchedContext *Context);
+
 } // namespace llvm
 
 #endif // LLVM_LIB_TARGET_RISCV_RISCVMACHINESCHEDULER_H

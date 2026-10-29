@@ -129,7 +129,7 @@ static cl::opt<bool> DisableRISCVRelayout(
     cl::desc("Disable the RISC-V relayout (bundle-aware branch relaxation) pass"),
     cl::init(false));
 
-enum class DandelionPreRASchedulerKind { Generic, LLVMVLIW };
+enum class DandelionPreRASchedulerKind { Generic, LLVMVLIW, Dandelion };
 
 static cl::opt<DandelionPreRASchedulerKind> DandelionPreRAScheduler(
     "riscv-dandelion-prera-scheduler", cl::Hidden,
@@ -138,7 +138,9 @@ static cl::opt<DandelionPreRASchedulerKind> DandelionPreRAScheduler(
         clEnumValN(DandelionPreRASchedulerKind::Generic, "generic",
                    "Use RISC-V's generic converging scheduler"),
         clEnumValN(DandelionPreRASchedulerKind::LLVMVLIW, "vliw",
-                   "Use LLVM's DFA-aware VLIW scheduler")),
+                   "Use LLVM's generic DFA-aware VLIW scheduler"),
+        clEnumValN(DandelionPreRASchedulerKind::Dandelion, "dandelion",
+                   "Use the Dandelion slot- and dependency-aware scheduler")),
     cl::init(DandelionPreRASchedulerKind::Generic));
 
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
@@ -325,12 +327,15 @@ bool RISCVTargetMachine::isNoopAddrSpaceCast(unsigned SrcAS,
 ScheduleDAGInstrs *
 RISCVTargetMachine::createMachineScheduler(MachineSchedContext *C) const {
   const RISCVSubtarget &ST = C->MF->getSubtarget<RISCVSubtarget>();
-  ScheduleDAGMILive *DAG =
-      ST.getProcFamily() == RISCVSubtarget::Dandelion &&
-              DandelionPreRAScheduler ==
-                  DandelionPreRASchedulerKind::LLVMVLIW
-          ? createRISCVVLIWMachineScheduler(C)
-          : createSchedLive(C);
+  ScheduleDAGMILive *DAG;
+  if (ST.getProcFamily() != RISCVSubtarget::Dandelion ||
+      DandelionPreRAScheduler == DandelionPreRASchedulerKind::Generic)
+    DAG = createSchedLive(C);
+  else if (DandelionPreRAScheduler ==
+           DandelionPreRASchedulerKind::LLVMVLIW)
+    DAG = createRISCVVLIWMachineScheduler(C);
+  else
+    DAG = createRISCVDandelionMachineScheduler(C);
   if (EnableMISchedLoadStoreClustering) {
     DAG->addMutation(createLoadClusterDAGMutation(
         DAG->TII, DAG->TRI, /*ReorderWhileClustering=*/true));

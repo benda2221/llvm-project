@@ -8,13 +8,24 @@
 
 #include "RISCVVLIWSlotUtils.h"
 #include "RISCV.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/ScheduleDAG.h"
 #include "llvm/MC/MCInstrItineraries.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include <array>
 
 using namespace llvm;
+
+void RISCVVLIW::PacketLegalityState::clear() {
+  SUnits.clear();
+  ShallowProducer = nullptr;
+  ShallowConsumer = nullptr;
+  ShallowDataRegs.clear();
+  MustPrecede = {};
+  AssignedSlots.clear();
+}
 
 uint8_t RISCVVLIW::getSlotMask(unsigned SchedClass,
                                const InstrItineraryData *IID) {
@@ -59,6 +70,106 @@ bool RISCVVLIW::isShallowDepOK(const MachineInstr &MI,
   std::optional<unsigned> FirstUseCycle =
       IID->getOperandCycle(SchedClass, 1);
   return FirstUseCycle && *FirstUseCycle == 1;
+}
+
+bool RISCVVLIW::isShallowHardwareUseOperand(const MachineInstr &MI,
+                                            const MachineOperand &MO,
+                                            Register Reg) {
+  if (!MO.isReg() || !MO.isUse() || MO.isUndef() || MO.getReg() != Reg)
+    return false;
+  if (!MO.isImplicit())
+    return true;
+  return MI.getOpcode() == RISCV::PseudoRET && Reg == RISCV::X1;
+}
+
+bool RISCVVLIW::hasShallowHardwareUse(const MachineInstr &MI, Register Reg) {
+  for (const MachineOperand &MO : MI.operands())
+    if (isShallowHardwareUseOperand(MI, MO, Reg))
+      return true;
+  return false;
+}
+
+bool RISCVVLIW::buildPacketLegalityState(
+    ArrayRef<SUnit *> Units, const InstrItineraryData *IID,
+    bool AllowShallowDependencies, PacketLegalityState &State) {
+  State.clear();
+  if (Units.empty() || Units.size() > DandelionSlots)
+    return false;
+
+  State.SUnits.append(Units.begin(), Units.end());
+  DenseMap<SUnit *, unsigned> Indices;
+  for (unsigned I = 0; I != Units.size(); ++I)
+    Indices[Units[I]] = I;
+
+  for (unsigned I = 0; I != Units.size(); ++I) {
+    SUnit *Producer = Units[I];
+    if (!Producer || !Producer->getInstr())
+      return false;
+    for (const SDep &Dep : Producer->Succs) {
+      auto It = Indices.find(Dep.getSUnit());
+      if (It == Indices.end())
+        continue;
+      unsigned J = It->second;
+      SUnit *Consumer = Units[J];
+
+      switch (Dep.getKind()) {
+      case SDep::Data:
+        if (!AllowShallowDependencies || !Dep.isAssignedRegDep() ||
+            !hasShallowHardwareUse(*Consumer->getInstr(), Dep.getReg()) ||
+            !isShallowDepOK(*Producer->getInstr(),
+                            ShallowDepRole::Producer, IID) ||
+            !isShallowDepOK(*Consumer->getInstr(),
+                            ShallowDepRole::Consumer, IID))
+          return false;
+        if (State.ShallowProducer &&
+            (State.ShallowProducer != Producer ||
+             State.ShallowConsumer != Consumer))
+          return false;
+        State.ShallowProducer = Producer;
+        State.ShallowConsumer = Consumer;
+        State.ShallowDataRegs.push_back(Dep.getReg());
+        State.MustPrecede[I][J] = true;
+        break;
+      case SDep::Output:
+        State.MustPrecede[I][J] = true;
+        break;
+      case SDep::Anti:
+        if (isShallowDepOK(*Consumer->getInstr(),
+                           ShallowDepRole::Producer, IID) &&
+            isShallowDepOK(*Producer->getInstr(),
+                           ShallowDepRole::Consumer, IID))
+          State.MustPrecede[I][J] = true;
+        break;
+      case SDep::Order:
+        if (!Dep.isWeak())
+          return false;
+        break;
+      }
+    }
+  }
+
+  SmallVector<MachineInstr *, DandelionSlots> Instrs;
+  for (SUnit *SU : Units)
+    Instrs.push_back(SU->getInstr());
+  return assignSlots(Instrs, IID, State.MustPrecede, State.AssignedSlots);
+}
+
+void RISCVVLIW::markShallowInternalReads(
+    const PacketLegalityState &State) {
+  if (!State.ShallowConsumer)
+    return;
+
+  MachineInstr *Consumer = State.ShallowConsumer->getInstr();
+  for (Register Reg : State.ShallowDataRegs) {
+    bool Marked = false;
+    for (MachineOperand &MO : Consumer->operands()) {
+      if (!isShallowHardwareUseOperand(*Consumer, MO, Reg))
+        continue;
+      MO.setIsInternalRead(true);
+      Marked = true;
+    }
+    assert(Marked && "SDep::Data register is not a consumer operand");
+  }
 }
 
 static bool satisfiesAssignedConstraints(

@@ -11,6 +11,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/CodeGen/Register.h"
 #include <array>
 #include <cstdint>
 
@@ -18,6 +19,8 @@ namespace llvm {
 
 class InstrItineraryData;
 class MachineInstr;
+class MachineOperand;
+class SUnit;
 
 namespace RISCVVLIW {
 
@@ -33,10 +36,40 @@ struct SlotPacket {
   SmallVector<int, DandelionSlots> Slots;
 };
 
+/// Dependency and physical-slot solution for one tentative Dandelion packet.
+/// This state is shared by the pre-RA scheduler and the post-RA packetizer so
+/// both stages apply the same RAW/WAR/WAW and shallow-dependency rules.
+struct PacketLegalityState {
+  SmallVector<SUnit *, DandelionSlots> SUnits;
+  SUnit *ShallowProducer = nullptr;
+  SUnit *ShallowConsumer = nullptr;
+  SmallVector<Register, 4> ShallowDataRegs;
+  SlotOrderMatrix MustPrecede{};
+  SmallVector<int, DandelionSlots> AssignedSlots;
+
+  void clear();
+};
+
 uint8_t getSlotMask(unsigned SchedClass, const InstrItineraryData *IID);
 
 bool isShallowDepOK(const MachineInstr &MI, ShallowDepRole Role,
                     const InstrItineraryData *IID);
+
+bool isShallowHardwareUseOperand(const MachineInstr &MI,
+                                 const MachineOperand &MO, Register Reg);
+
+bool hasShallowHardwareUse(const MachineInstr &MI, Register Reg);
+
+/// Check all dependencies among \p Units and solve their physical slot
+/// assignment. Units must be supplied in execution order. When
+/// \p AllowShallowDependencies is false, every true data dependency splits the
+/// packet.
+bool buildPacketLegalityState(ArrayRef<SUnit *> Units,
+                              const InstrItineraryData *IID,
+                              bool AllowShallowDependencies,
+                              PacketLegalityState &State);
+
+void markShallowInternalReads(const PacketLegalityState &State);
 
 bool assignSlots(ArrayRef<MachineInstr *> Instrs, const InstrItineraryData *IID,
                  const SlotOrderMatrix &MustPrecede,

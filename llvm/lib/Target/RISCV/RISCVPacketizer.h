@@ -27,23 +27,8 @@ class MachineLoopInfo;
 class InstrItineraryData;
 
 class RISCVPacketizerList : public VLIWPacketizerList {
-    struct PacketDependencyState {
-      SmallVector<SUnit *, RISCVVLIW::DandelionSlots> SUnits;
-      SUnit *ShallowProducer = nullptr;
-      SUnit *ShallowConsumer = nullptr;
-      SmallVector<Register, 4> ShallowDataRegs;
-      RISCVVLIW::SlotOrderMatrix MustPrecede{};
-      SmallVector<int, RISCVVLIW::DandelionSlots> AssignedSlots;
-
-      void clear() {
-        SUnits.clear();
-        ShallowProducer = nullptr;
-        ShallowConsumer = nullptr;
-        ShallowDataRegs.clear();
-        MustPrecede = {};
-        AssignedSlots.clear();
-      }
-    } PacketState;
+    using PacketDependencyState = RISCVVLIW::PacketLegalityState;
+    PacketDependencyState PacketState;
 
 private:
     /// Return true for instructions that should not be wrapped into BUNDLE.

@@ -55,35 +55,10 @@ STATISTIC(NumShallowDataEdges,
           "[riscv-packetizer] Accepted shallow Data edges");
 STATISTIC(NumShallowEndpointPairs,
           "[riscv-packetizer] Accepted shallow dependency endpoint pairs");
-STATISTIC(NumRejectedSecondDataPair,
-          "[riscv-packetizer] Candidates rejected by a second Data pair");
-STATISTIC(NumSlotConstraintSplits, "[riscv-packetizer] Packets split because "
-                                   "slot constraints had no solution");
+STATISTIC(NumPacketConstraintSplits,
+          "[riscv-packetizer] Packets split by dependency or slot constraints");
 
 namespace {
-
-/// Return true when \p MO is a source that the emitted instruction really
-/// reads in its integer datapath.  Most such operands are explicit.  The one
-/// fixed-register exception currently materialized by the Dandelion
-/// packetizer is PseudoRET's x1 target.  ABI call arguments, return values and
-/// stack-pointer liveness operands remain ordinary implicit uses and must not
-/// be mistaken for jump targets.
-static bool isShallowHardwareUseOperand(const MachineInstr &MI,
-                                        const MachineOperand &MO,
-                                        Register Reg) {
-  if (!MO.isReg() || !MO.isUse() || MO.isUndef() || MO.getReg() != Reg)
-    return false;
-  if (!MO.isImplicit())
-    return true;
-  return MI.getOpcode() == RISCV::PseudoRET && Reg == RISCV::X1;
-}
-
-static bool hasShallowHardwareUse(const MachineInstr &MI, Register Reg) {
-  for (const MachineOperand &MO : MI.operands())
-    if (isShallowHardwareUseOperand(MI, MO, Reg))
-      return true;
-  return false;
-}
 
 /// PseudoRET expands one-to-one to JALR x0, x1, 0, but its current descriptor
 /// does not expose x1 as an operand.  Materialize that fixed hardware use only
@@ -98,7 +73,7 @@ static void materializeFixedShallowHardwareUses(
   for (auto I = Begin; I != End; ++I) {
     MachineInstr &MI = *I;
     if (MI.getOpcode() == RISCV::PseudoRET && HasPriorX1Def &&
-        !hasShallowHardwareUse(MI, RISCV::X1))
+        !RISCVVLIW::hasShallowHardwareUse(MI, RISCV::X1))
       MI.addOperand(MF, MachineOperand::CreateReg(
                             RISCV::X1, /*isDef=*/false, /*isImp=*/true));
     if (MI.definesRegister(RISCV::X1, TRI))
@@ -216,79 +191,24 @@ bool RISCVPacketizer::runOnMachineFunction(MachineFunction &MF) {
 // order in which candidates were selected.
 bool RISCVPacketizerList::buildSDAPacketState(
     ArrayRef<SUnit *> Units, PacketDependencyState &State) {
-  State.clear();
   if (Units.empty() || Units.size() > RISCVVLIW::DandelionSlots)
     return false;
 
-  State.SUnits.append(Units.begin(), Units.end());
-  DenseMap<SUnit *, unsigned> Indices;
-  for (unsigned I = 0; I != Units.size(); ++I) {
-    Indices[Units[I]] = I;
-    if (Units.size() > 1 && isSoloInstruction(*Units[I]->getInstr()))
+  for (SUnit *SU : Units)
+    if (Units.size() > 1 && isSoloInstruction(*SU->getInstr()))
       return false;
-  }
-
-  const InstrItineraryData *IID = MF.getSubtarget().getInstrItineraryData();
-  for (unsigned I = 0; I != Units.size(); ++I) {
-    SUnit *Producer = Units[I];
-    for (const SDep &Dep : Producer->Succs) {
-      auto It = Indices.find(Dep.getSUnit());
-      if (It == Indices.end())
-        continue;
-      unsigned J = It->second;
-      SUnit *Consumer = Units[J];
-
-      switch (Dep.getKind()) {
-      case SDep::Data:
-        if (DisableShallowDependency || !Dep.isAssignedRegDep() ||
-            !hasShallowHardwareUse(*Consumer->getInstr(), Dep.getReg()) ||
-            !RISCVVLIW::isShallowDepOK(
-                *Producer->getInstr(), RISCVVLIW::ShallowDepRole::Producer,
-                IID) ||
-            !RISCVVLIW::isShallowDepOK(
-                *Consumer->getInstr(), RISCVVLIW::ShallowDepRole::Consumer,
-                IID))
-          return false;
-        if (State.ShallowProducer &&
-            (State.ShallowProducer != Producer ||
-             State.ShallowConsumer != Consumer))
-          return false;
-        State.ShallowProducer = Producer;
-        State.ShallowConsumer = Consumer;
-        State.ShallowDataRegs.push_back(Dep.getReg());
-        State.MustPrecede[I][J] = true;
-        break;
-      case SDep::Output:
-        State.MustPrecede[I][J] = true;
-        break;
-      case SDep::Anti:
-        if (RISCVVLIW::isShallowDepOK(
-                *Consumer->getInstr(), RISCVVLIW::ShallowDepRole::Producer,
-                IID) &&
-            RISCVVLIW::isShallowDepOK(
-                *Producer->getInstr(), RISCVVLIW::ShallowDepRole::Consumer,
-                IID))
-          State.MustPrecede[I][J] = true;
-        break;
-      case SDep::Order:
-        if (!Dep.isWeak())
-          return false;
-        break;
-      }
-    }
-  }
 
   ResourceTracker->clearResources();
-  SmallVector<MachineInstr *, RISCVVLIW::DandelionSlots> Instrs;
   for (SUnit *SU : Units) {
     MachineInstr *MI = SU->getInstr();
     if (!ResourceTracker->canReserveResources(*MI))
       return false;
     ResourceTracker->reserveResources(*MI);
-    Instrs.push_back(MI);
   }
-  return RISCVVLIW::assignSlots(Instrs, IID, State.MustPrecede,
-                                State.AssignedSlots);
+
+  const InstrItineraryData *IID = MF.getSubtarget().getInstrItineraryData();
+  return RISCVVLIW::buildPacketLegalityState(
+      Units, IID, !DisableShallowDependency, State);
 }
 
 void RISCVPacketizerList::packetizeSDARegion(
@@ -665,86 +585,25 @@ void RISCVPacketizerList::emitBundleForCurrentPacket(
 
 bool RISCVPacketizerList::buildTrialPacketState(
     SUnit *NewSU, PacketDependencyState &TrialState) const {
-  TrialState = PacketState;
   if (!NewSU || !NewSU->getInstr() ||
-      TrialState.SUnits.size() >= RISCVVLIW::DandelionSlots)
+      PacketState.SUnits.size() >= RISCVVLIW::DandelionSlots)
     return false;
 
+  SmallVector<SUnit *, RISCVVLIW::DandelionSlots> TrialUnits(
+      PacketState.SUnits);
+  TrialUnits.push_back(NewSU);
   const InstrItineraryData *IID = MF.getSubtarget().getInstrItineraryData();
-  unsigned NewIdx = TrialState.SUnits.size();
-  TrialState.SUnits.push_back(NewSU);
-
-  for (unsigned OldIdx = 0; OldIdx != NewIdx; ++OldIdx) {
-    SUnit *OldSU = TrialState.SUnits[OldIdx];
-    for (const SDep &Dep : OldSU->Succs) {
-      if (Dep.getSUnit() != NewSU)
-        continue;
-
-      switch (Dep.getKind()) {
-      case SDep::Data:
-        if (DisableShallowDependency || !Dep.isAssignedRegDep() ||
-            !hasShallowHardwareUse(*NewSU->getInstr(), Dep.getReg()) ||
-            !RISCVVLIW::isShallowDepOK(
-                *OldSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer, IID) ||
-            !RISCVVLIW::isShallowDepOK(
-                *NewSU->getInstr(), RISCVVLIW::ShallowDepRole::Consumer, IID))
-          return false;
-        if (TrialState.ShallowProducer &&
-            (TrialState.ShallowProducer != OldSU ||
-             TrialState.ShallowConsumer != NewSU)) {
-          ++NumRejectedSecondDataPair;
-          return false;
-        }
-        TrialState.ShallowProducer = OldSU;
-        TrialState.ShallowConsumer = NewSU;
-        TrialState.ShallowDataRegs.push_back(Dep.getReg());
-        TrialState.MustPrecede[OldIdx][NewIdx] = true;
-        break;
-      case SDep::Output:
-        TrialState.MustPrecede[OldIdx][NewIdx] = true;
-        break;
-      case SDep::Anti:
-        if (RISCVVLIW::isShallowDepOK(
-                *NewSU->getInstr(), RISCVVLIW::ShallowDepRole::Producer, IID) &&
-            RISCVVLIW::isShallowDepOK(*OldSU->getInstr(),
-                                      RISCVVLIW::ShallowDepRole::Consumer, IID))
-          TrialState.MustPrecede[OldIdx][NewIdx] = true;
-        break;
-      case SDep::Order:
-        if (!Dep.isWeak())
-          return false;
-        break;
-      }
-    }
-  }
-
-  SmallVector<MachineInstr *, RISCVVLIW::DandelionSlots> Instrs;
-  for (SUnit *SU : TrialState.SUnits)
-    Instrs.push_back(SU->getInstr());
-  if (RISCVVLIW::assignSlots(Instrs, IID, TrialState.MustPrecede,
-                             TrialState.AssignedSlots))
+  if (RISCVVLIW::buildPacketLegalityState(
+          TrialUnits, IID, !DisableShallowDependency, TrialState))
     return true;
   if (!PacketState.SUnits.empty())
-    ++NumSlotConstraintSplits;
+    ++NumPacketConstraintSplits;
   return false;
 }
 
 void RISCVPacketizerList::markShallowInternalReads(
     const PacketDependencyState &State) const {
-  if (!State.ShallowConsumer)
-    return;
-
-  MachineInstr *Consumer = State.ShallowConsumer->getInstr();
-  for (Register Reg : State.ShallowDataRegs) {
-    bool Marked = false;
-    for (MachineOperand &MO : Consumer->operands()) {
-      if (!isShallowHardwareUseOperand(*Consumer, MO, Reg))
-        continue;
-      MO.setIsInternalRead(true);
-      Marked = true;
-    }
-    assert(Marked && "SDep::Data register is not a consumer operand");
-  }
+  RISCVVLIW::markShallowInternalReads(State);
 }
 
 bool RISCVPacketizerList::commitCandidateToPacketState(SUnit *NewSU) {
@@ -781,7 +640,7 @@ bool RISCVPacketizerList::isLegalToPruneDependencies(SUnit *SUI, SUnit *SUJ) {
       continue;
     HasData = true;
     if (!Dep.isAssignedRegDep() ||
-        !hasShallowHardwareUse(*SUI->getInstr(), Dep.getReg()) ||
+        !RISCVVLIW::hasShallowHardwareUse(*SUI->getInstr(), Dep.getReg()) ||
         !RISCVVLIW::isShallowDepOK(*SUJ->getInstr(),
                                    RISCVVLIW::ShallowDepRole::Producer, IID) ||
         !RISCVVLIW::isShallowDepOK(*SUI->getInstr(),
