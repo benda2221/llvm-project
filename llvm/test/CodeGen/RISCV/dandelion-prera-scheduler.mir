@@ -8,6 +8,7 @@
 # RUN:   | FileCheck %s --check-prefix=VLIW
 # RUN: llc -mtriple=riscv32 -mcpu=dandelion -run-pass=machine-scheduler \
 # RUN:   -riscv-dandelion-prera-scheduler=dandelion \
+# RUN:   -misched-prera-direction=topdown \
 # RUN:   -debug-only=machine-scheduler -o /dev/null %s 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=DANDELION
 # REQUIRES: asserts
@@ -18,6 +19,8 @@
 # DANDELION: MI Converging Scheduling VLIW
 # DANDELION: Dandelion VLIW candidate
 # DANDELION: Dandelion VLIW candidate opcode={{[0-9]+}} packet-size={{[1-9][0-9]*}} legal=1
+# DANDELION: Dandelion VLIW cost bonus=
+# DANDELION: Dandelion VLIW packet boundary opcode={{[0-9]+}} direction=top
 
 ---
 name: prera_scheduler_selection
@@ -43,5 +46,6 @@ body: |
     dead %0:gpr = ADD $x10, $x11
     dead %1:gpr = SUB $x10, $x11
     dead %2:gpr = XOR $x10, $x11
+    dead %3:gpr = CSRRS 768, $x10
     PseudoRET
 ...
