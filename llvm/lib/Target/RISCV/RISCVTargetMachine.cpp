@@ -141,7 +141,7 @@ static cl::opt<DandelionPreRASchedulerKind> DandelionPreRAScheduler(
                    "Use LLVM's generic DFA-aware VLIW scheduler"),
         clEnumValN(DandelionPreRASchedulerKind::Dandelion, "dandelion",
                    "Use the Dandelion slot- and dependency-aware scheduler")),
-    cl::init(DandelionPreRASchedulerKind::Generic));
+    cl::init(DandelionPreRASchedulerKind::Dandelion));
 
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> X(getTheRISCV32Target());

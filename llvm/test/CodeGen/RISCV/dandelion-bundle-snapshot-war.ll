@@ -1,14 +1,20 @@
 ; RUN: llc -mtriple=riscv32 -mcpu=dandelion \
 ; RUN:   -mattr=+m,+f,-d,-unaligned-scalar-mem -verify-machineinstrs \
+; RUN:   -riscv-dandelion-prera-scheduler=generic \
 ; RUN:   -stop-after=riscv-pack-padding -o - %s \
 ; RUN:   | FileCheck %s --check-prefix=MIR
 ; RUN: llc -mtriple=riscv32 -mcpu=dandelion \
 ; RUN:   -mattr=+m,+f,-d,-unaligned-scalar-mem -verify-machineinstrs \
+; RUN:   -riscv-dandelion-prera-scheduler=generic \
 ; RUN:   -stop-before=riscv-asm-printer -o - %s \
 ; RUN:   | FileCheck %s --check-prefix=PREEMIT
 ; RUN: llc -mtriple=riscv32 -mcpu=dandelion \
 ; RUN:   -mattr=+m,+f,-d,-unaligned-scalar-mem -verify-machineinstrs \
+; RUN:   -riscv-dandelion-prera-scheduler=generic \
 ; RUN:   -filetype=asm -o - %s | FileCheck %s --check-prefix=ASM
+
+; Keep the generic pre-RA order in this regression: it deliberately creates a
+; particular register-reuse shape to exercise the post-RA packet snapshot.
 
 ; Strict alignment expands this store into shifts and byte stores. Register
 ; allocation reuses x13 for two adjacent live ranges. The second packet has a

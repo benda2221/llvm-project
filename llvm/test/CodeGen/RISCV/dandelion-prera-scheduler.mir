@@ -1,4 +1,7 @@
 # RUN: llc -mtriple=riscv32 -mcpu=dandelion -run-pass=machine-scheduler \
+# RUN:   -debug-only=machine-scheduler -o /dev/null %s 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=DEFAULT
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -run-pass=machine-scheduler \
 # RUN:   -riscv-dandelion-prera-scheduler=generic \
 # RUN:   -debug-only=machine-scheduler -o /dev/null %s 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=GENERIC
@@ -13,6 +16,8 @@
 # RUN:   | FileCheck %s --check-prefix=DANDELION
 # REQUIRES: asserts
 
+# DEFAULT: MI Converging Scheduling VLIW
+# DEFAULT: Dandelion VLIW candidate
 # GENERIC: ScheduleDAGMILive::schedule starting
 # GENERIC-NOT: MI Converging Scheduling VLIW
 # VLIW: MI Converging Scheduling VLIW
