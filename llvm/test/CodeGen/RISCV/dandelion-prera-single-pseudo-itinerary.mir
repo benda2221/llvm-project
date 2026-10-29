@@ -1,0 +1,30 @@
+# RUN: llc -mtriple=riscv32 -mcpu=dandelion -run-pass=machine-scheduler \
+# RUN:   -riscv-dandelion-prera-scheduler=dandelion \
+# RUN:   -debug-only=machine-scheduler -o /dev/null %s 2>&1 \
+# RUN:   | FileCheck %s
+# REQUIRES: asserts
+
+# PseudoAddTPRel expands one-to-one to ADD and the system-register pseudos
+# expand one-to-one to CSR instructions. They must use their real instruction
+# itineraries instead of becoming opaque pre-RA boundaries.
+# CHECK-NOT: Dandelion VLIW opaque boundary
+# CHECK: Dandelion VLIW candidate opcode={{[0-9]+}}
+
+--- |
+  @tls_object = external thread_local(localexec) global i32
+
+  define void @single_instruction_pseudos() {
+    ret void
+  }
+...
+---
+name: single_instruction_pseudos
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x10, $x4
+    dead %0:gpr = PseudoAddTPRel $x10, $x4, target-flags(riscv-tprel-add) @tls_object
+    %1:gpr = ReadFRM implicit $frm
+    WriteFRM %1, implicit-def $frm
+    PseudoRET
+...

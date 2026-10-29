@@ -1548,7 +1548,10 @@ def : PatGprGpr<shiftop<sra>, SRA>;
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isCodeGenOnly = 0 in
 def PseudoAddTPRel : Pseudo<(outs GPR:$rd),
                             (ins GPR:$rs1, GPR:$rs2, tprel_add_symbol:$src), [],
-                            "add", "$rd, $rs1, $rs2, $src">;
+                            "add", "$rd, $rs1, $rs2, $src">,
+                     Sched<[WriteIALU, ReadIALU, ReadIALU]> {
+  let Itinerary = IIC_ALU;
+}
 
 /// FrameIndex calculations
 
@@ -1597,7 +1600,9 @@ def PROBED_STACKALLOC_DYN : Pseudo<(outs),
 // FIXME: The scheduling information does not reflect the multiple instructions.
 let Size = 8, isReMaterializable = 1 in
 def PseudoMovAddr : Pseudo<(outs GPR:$dst), (ins uimm20_lui:$hi, simm12:$lo), []>,
-                    Sched<[WriteIALU]>;
+                    Sched<[WriteIALU]> {
+  let Itinerary = IIC_ALU;
+}
 
 def riscv_hi_oneuse : unop_oneuse<riscv_hi>;
 def addr_hi_lo : PatFrag<(ops node:$hi, node:$lo),
@@ -1901,7 +1906,9 @@ def PseudoJump : Pseudo<(outs GPR:$rd), (ins pseudo_jump_symbol:$target), [],
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0, Size = 8,
     isReMaterializable = 1 in
 def PseudoMovImm : Pseudo<(outs GPR:$dst), (ins i32imm:$imm), []>,
-                   Sched<[WriteIALU]>;
+                   Sched<[WriteIALU]> {
+  let Itinerary = IIC_ALU;
+}
 
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0, Size = 8, isCodeGenOnly = 0,
     isAsmParserOnly = 1 in
@@ -2048,7 +2055,9 @@ def : Pat<(atomic_fence (XLenVT 7), (timm)), (FENCE 0b11, 0b11)>;
 class ReadSysReg<SysReg SR, list<Register> Regs>
   : Pseudo<(outs GPR:$rd), (ins),
            [(set GPR:$rd, (XLenVT (riscv_read_csr (XLenVT SR.Encoding))))]>,
-    PseudoInstExpansion<(CSRRS GPR:$rd, SR.Encoding, X0)> {
+    PseudoInstExpansion<(CSRRS GPR:$rd, SR.Encoding, X0)>,
+    Sched<[WriteCSR]> {
+  let Itinerary = IIC_CSR;
   let hasSideEffects = 0;
   let Uses = Regs;
 }
@@ -2056,7 +2065,9 @@ class ReadSysReg<SysReg SR, list<Register> Regs>
 class WriteSysReg<SysReg SR, list<Register> Regs>
   : Pseudo<(outs), (ins GPR:$val),
            [(riscv_write_csr (XLenVT SR.Encoding), (XLenVT GPR:$val))]>,
-    PseudoInstExpansion<(CSRRW X0, SR.Encoding, GPR:$val)> {
+    PseudoInstExpansion<(CSRRW X0, SR.Encoding, GPR:$val)>,
+    Sched<[WriteCSR, ReadCSR]> {
+  let Itinerary = IIC_CSR;
   let hasSideEffects = 0;
   let Defs = Regs;
 }
@@ -2064,7 +2075,9 @@ class WriteSysReg<SysReg SR, list<Register> Regs>
 class WriteSysRegImm<SysReg SR, list<Register> Regs>
   : Pseudo<(outs), (ins uimm5:$val),
            [(riscv_write_csr (XLenVT SR.Encoding), uimm5:$val)]>,
-    PseudoInstExpansion<(CSRRWI X0, SR.Encoding, uimm5:$val)> {
+    PseudoInstExpansion<(CSRRWI X0, SR.Encoding, uimm5:$val)>,
+    Sched<[WriteCSR]> {
+  let Itinerary = IIC_CSR;
   let hasSideEffects = 0;
   let Defs = Regs;
 }
@@ -2072,7 +2085,9 @@ class WriteSysRegImm<SysReg SR, list<Register> Regs>
 class SwapSysReg<SysReg SR, list<Register> Regs>
   : Pseudo<(outs GPR:$rd), (ins GPR:$val),
            [(set GPR:$rd, (riscv_swap_csr (XLenVT SR.Encoding), (XLenVT GPR:$val)))]>,
-    PseudoInstExpansion<(CSRRW GPR:$rd, SR.Encoding, GPR:$val)> {
+    PseudoInstExpansion<(CSRRW GPR:$rd, SR.Encoding, GPR:$val)>,
+    Sched<[WriteCSR, ReadCSR]> {
+  let Itinerary = IIC_CSR;
   let hasSideEffects = 0;
   let Uses = Regs;
   let Defs = Regs;
@@ -2081,7 +2096,9 @@ class SwapSysReg<SysReg SR, list<Register> Regs>
 class SwapSysRegImm<SysReg SR, list<Register> Regs>
   : Pseudo<(outs GPR:$rd), (ins uimm5:$val),
            [(set GPR:$rd, (XLenVT (riscv_swap_csr (XLenVT SR.Encoding), uimm5:$val)))]>,
-    PseudoInstExpansion<(CSRRWI GPR:$rd, SR.Encoding, uimm5:$val)> {
+    PseudoInstExpansion<(CSRRWI GPR:$rd, SR.Encoding, uimm5:$val)>,
+    Sched<[WriteCSR]> {
+  let Itinerary = IIC_CSR;
   let hasSideEffects = 0;
   let Uses = Regs;
   let Defs = Regs;
