@@ -13,6 +13,7 @@
 #include "RISCVTargetMachine.h"
 #include "MCTargetDesc/RISCVBaseInfo.h"
 #include "RISCV.h"
+#include "RISCVMachineScheduler.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVTargetObjectFile.h"
 #include "RISCVTargetTransformInfo.h"
@@ -127,6 +128,18 @@ static cl::opt<bool> DisableRISCVRelayout(
     "riscv-disable-relayout", cl::Hidden,
     cl::desc("Disable the RISC-V relayout (bundle-aware branch relaxation) pass"),
     cl::init(false));
+
+enum class DandelionPreRASchedulerKind { Generic, LLVMVLIW };
+
+static cl::opt<DandelionPreRASchedulerKind> DandelionPreRAScheduler(
+    "riscv-dandelion-prera-scheduler", cl::Hidden,
+    cl::desc("Select the Dandelion pre-RA machine scheduler"),
+    cl::values(
+        clEnumValN(DandelionPreRASchedulerKind::Generic, "generic",
+                   "Use RISC-V's generic converging scheduler"),
+        clEnumValN(DandelionPreRASchedulerKind::LLVMVLIW, "vliw",
+                   "Use LLVM's DFA-aware VLIW scheduler")),
+    cl::init(DandelionPreRASchedulerKind::Generic));
 
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> X(getTheRISCV32Target());
@@ -311,7 +324,13 @@ bool RISCVTargetMachine::isNoopAddrSpaceCast(unsigned SrcAS,
 
 ScheduleDAGInstrs *
 RISCVTargetMachine::createMachineScheduler(MachineSchedContext *C) const {
-  ScheduleDAGMILive *DAG = createSchedLive(C);
+  const RISCVSubtarget &ST = C->MF->getSubtarget<RISCVSubtarget>();
+  ScheduleDAGMILive *DAG =
+      ST.getProcFamily() == RISCVSubtarget::Dandelion &&
+              DandelionPreRAScheduler ==
+                  DandelionPreRASchedulerKind::LLVMVLIW
+          ? createRISCVVLIWMachineScheduler(C)
+          : createSchedLive(C);
   if (EnableMISchedLoadStoreClustering) {
     DAG->addMutation(createLoadClusterDAGMutation(
         DAG->TII, DAG->TRI, /*ReorderWhileClustering=*/true));
@@ -319,7 +338,6 @@ RISCVTargetMachine::createMachineScheduler(MachineSchedContext *C) const {
         DAG->TII, DAG->TRI, /*ReorderWhileClustering=*/true));
   }
 
-  const RISCVSubtarget &ST = C->MF->getSubtarget<RISCVSubtarget>();
   if (!DisableVectorMaskMutation && ST.hasVInstructions())
     DAG->addMutation(createRISCVVectorMaskDAGMutation(DAG->TRI));
 
